@@ -1,138 +1,122 @@
 # omni_tf_manager
 
-`omni_tf_manager` is the single authority for the core localization and sensor
-TF tree of Omni inspection robots. It is a ROS 2 Humble C++ package designed to
-replace distributed TF publication in SLAM, planner adapters and deployment
-scripts without coupling frame names to a particular robot model.
+`omni_tf_manager` is the single TF authority for Omni inspection robots. It
+owns the localization spine and calibrated fixed sensor tree while SLAM remains
+responsible only for estimating poses.
 
-The target production tree is:
-
-```text
-lio_map
-└── lio_odom
-    └── scan_base_link
-        ├── LiDAR link / input alias
-        ├── IMU link
-        ├── depth camera link
-        │   └── depth optical frame
-        └── RGB camera link
-            └── RGB optical frame
-```
-
-Algorithm-private frames such as `sliding_map`, robot joint transforms and
-mission frames remain owned by their respective components. The invariant is
-one publisher per TF edge, not one TF process for the entire ROS graph.
-
-## Capabilities
-
-- `shadow` mode computes candidate body odometry without publishing TF;
-- `authority` mode owns `map -> odom`, `odom -> base` and configured static
-  sensor transforms;
-- derives body odometry from a tracking-sensor odometry and a calibrated
-  `base -> tracking_sensor` transform;
-- publishes local and global body odometry with transformed pose/twist
-  covariance;
-- supports ICP, identity, parameter and disabled map-alignment sources;
-- requires LiDAR, IMU, depth-camera and RGB-camera roles by default;
-- validates the static tree, unique child ownership, timestamps, frame names,
-  quaternion norms, discontinuities and stale data;
-- publishes transient-local readiness and standard ROS diagnostics;
-- keeps logical sensor IDs separate from actual frame names, allowing a new
-  robot model to be migrated by adding a profile rather than changing C++.
-
-## Build
-
-```bash
-cd /home/user/robot/omni_code/omni_navi
-source /opt/ros/humble/setup.bash
-colcon build --base-paths omni_tf_manager --symlink-install
-source install/setup.bash
-colcon test --base-paths omni_tf_manager --event-handlers console_direct+
-colcon test-result --verbose
-```
-
-## Matrix xgw shadow validation
-
-Start this node before the one-shot ICP result is published:
-
-```bash
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-
-ros2 launch omni_tf_manager omni_tf_manager.launch.py \
-  config_file:="$(ros2 pkg prefix omni_tf_manager)/share/omni_tf_manager/config/matrix_xgw.yaml" \
-  mode:=shadow
-```
-
-Shadow output is intentionally namespaced to avoid colliding with the existing
-planner adapter:
+The production tree is profile-driven and uses Omni-owned names:
 
 ```text
-/omni/tf_manager/body_odom
-/omni/tf_manager/body_odom_global
-/omni/tf_manager/ready
-/diagnostics
+omni_map
+└── omni_odom
+    └── omni_base_link
+        ├── omni_imu_link
+        │   └── omni_lidar_link
+        ├── omni_depth_camera_link
+        │   └── omni_depth_camera_optical_frame
+        └── omni_rgb_camera_link
+            └── omni_rgb_camera_optical_frame
 ```
 
-Do not use `mode:=authority` until all legacy publishers for the same edges
-have been disabled. See [docs/MIGRATION.md](docs/MIGRATION.md).
+## Ownership and SLAM state
 
-## Robot profiles
+In `authority` mode this node is the only publisher of:
 
-Profiles use stable logical transform IDs and configurable frame names:
+- dynamic `map -> odom` and `odom -> base`;
+- configured static body, LiDAR, IMU, depth-camera and RGB-camera transforms.
 
-```yaml
-frames.base: scan_base_link
-frames.tracking: vendor_lidar_frame
-profile_version: 1.2.0
-calibration_id: DOG_007_2026_08_21
+It consumes `/omni/slam/status` and changes behavior without starting another
+bridge process:
 
-static_transforms: [lidar_mount, imu_mount, depth_link, rgb_link]
+| SLAM mode | Dynamic TF behavior |
+|---|---|
+| stopped, missing or stale status | no dynamic TF; readiness false |
+| mapping | publish identity `map -> odom` and pose-derived `odom -> base` |
+| localization | normalize ICP `map -> LiDAR` through static extrinsics, then publish the complete chain |
 
-static_transform.lidar_mount.role: lidar
-static_transform.lidar_mount.parent_frame: scan_base_link
-static_transform.lidar_mount.child_frame: vendor_lidar_frame
-static_transform.lidar_mount.translation: [0.13, 0.0, 0.18]
-static_transform.lidar_mount.rotation_rpy: [0.0, 0.0, 0.0]
-```
+The node resets session pose/alignment state at every mode transition. Static
+sensor TF remains available while SLAM is stopped. `shadow` mode performs the
+same validation and body-odometry conversion but has no `/tf` or `/tf_static`
+publisher.
 
-Changing a vendor frame from `livox_frame` to `hesai_lidar` therefore requires
-only a profile change. All translations are metres and all rotations are fixed
-axis roll-pitch-yaw radians following ROS REP-103.
+FAST_LIO must use `publish.tf_en=false`. Its pose output is the IMU body pose,
+so the odometry child contract is `frames.tracking` (normally
+`omni_imu_link`), not the LiDAR frame.
 
-Profiles are immutable while the node is running. A profile or calibration
-change requires a controlled node restart and should carry a new calibration
-version in deployment configuration.
+## Inputs and outputs
 
-## Runtime contract
-
-Input sensor odometry must satisfy:
+Input odometry:
 
 ```text
-header.frame_id == frames.odom
-child_frame_id  == frames.tracking
-pose            == T_odom_tracking
-twist           expressed in frames.tracking
+topic             topics.sensor_odom (default /state_estimation)
+header.frame_id   frames.odom
+child_frame_id    frames.tracking
+pose              T_odom_tracking
 ```
 
-For `map_to_odom.source=icp_pose`, `/icp_result` must contain `T_map_odom` and
-use `header.frame_id == frames.map`.
+Localization alignment:
 
-Use FAST-LIO's local `/state_estimation` as the input. The existing
-`/state_estimation_global` has already applied map alignment and must not be
-used as manager input.
+```text
+topic             topics.icp_pose (default /icp_result)
+header.frame_id   frames.map
+child_frame_id    frames.icp_sensor
+pose              T_map_icp_sensor
+```
 
 The manager computes:
 
 ```text
 T_odom_base = T_odom_tracking × inverse(T_base_tracking)
+T_map_odom  = T_map_icp_sensor × inverse(T_tracking_icp_sensor)
 T_map_base  = T_map_odom × T_odom_base
 ```
 
-Invalid samples are rejected instead of being silently relabelled.
+Stable outputs are `/omni/tf_manager/body_odom`,
+`/omni/tf_manager/body_odom_global`, `/omni/tf_manager/ready` and
+`/diagnostics`.
 
-## Documentation
+## Configuration
 
-- [Architecture and safety contract](docs/ARCHITECTURE.md)
-- [Migration from current SLAM and planner TF publishers](docs/MIGRATION.md)
-- [Robot profile checklist](docs/ROBOT_PROFILE_CHECKLIST.md)
+All core and static frame names live in one robot profile. With
+`naming.require_omni_prefix=true`, every frame in the managed tree must begin
+with `omni_`. `omni_slam_manager` reads the same file through
+`tf_profile_path`, then passes those names into FAST_LIO and ICP launch files.
+
+Each robot model only replaces its YAML profile. Logical roles remain
+`lidar`, `imu`, `depth_camera` and `rgb_camera`; C++ code does not contain a
+vendor frame name.
+
+`config/matrix_xgw.yaml` is verified against Matrix `config/config.json` and
+the XGW MuJoCo model. Matrix's LiDAR and `livox_imu` site are co-located, so
+its FAST-LIO `T_imu_lidar` is identity. The same profile enables typed header
+normalization for the closed-source Matrix publishers.
+
+## Build and test
+
+Because the manager consumes the existing typed `SlamStatus`, build the
+interface and manager together:
+
+```bash
+cd /home/user/robot/omni_code/omni_navi
+source /opt/ros/humble/setup.bash
+colcon build --base-paths omni_slam omni_tf_manager --symlink-install
+source install/setup.bash
+ROS_LOG_DIR=/tmp/omni_ros_test_logs \
+  colcon test --base-paths omni_slam omni_tf_manager
+colcon test-result --verbose
+```
+
+Normal managed launch:
+
+```bash
+ros2 launch omni_slam_manager manager.launch.py \
+  tf_profile_path:=$(ros2 pkg prefix omni_tf_manager)/share/omni_tf_manager/config/matrix_xgw.yaml
+```
+
+The standalone Matrix scripts start this manager automatically with an
+explicit mapping/localization fallback mode because they do not run the SLAM
+control-plane node.
+
+See [Architecture](docs/ARCHITECTURE.md),
+[Migration](docs/MIGRATION.md), and the
+[robot profile checklist](docs/ROBOT_PROFILE_CHECKLIST.md).

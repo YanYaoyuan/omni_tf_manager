@@ -1,18 +1,23 @@
 omni_tf_manager:
   ros__parameters:
-    mode: shadow
+    mode: authority
     profile_name: matrix_xgw
-    profile_version: 1.0.0
-    calibration_id: MATRIX_CONFIG_2026_08_21_UNVERIFIED
+    profile_version: 1.1.0
+    calibration_id: MATRIX_XGW_MODEL_AND_CONFIG_2026_08_21
+    naming.require_omni_prefix: true
     use_sim_time: false
 
-    frames.map: lio_map
-    frames.odom: lio_odom
-    frames.base: scan_base_link
-    frames.tracking: livox_frame
+    frames.map: omni_map
+    frames.odom: omni_odom
+    frames.base: omni_base_link
+    # FAST_LIO state_point is the IMU body pose.
+    frames.tracking: omni_imu_link
+    # /icp_result is explicitly T_map_lidar.
+    frames.icp_sensor: omni_lidar_link
 
     topics.sensor_odom: /state_estimation
     topics.icp_pose: /icp_result
+    topics.slam_status: /omni/slam/status
     topics.local_body_odom: /omni/tf_manager/body_odom
     topics.global_body_odom: /omni/tf_manager/body_odom_global
     topics.diagnostics: /diagnostics
@@ -22,13 +27,13 @@ omni_tf_manager:
     publish.global_body_odom: true
     publish.add_map_covariance: false
 
-    map_to_odom.source: icp_pose
-    map_to_odom.is_static: true
+    slam_state.required: true
+    slam_state.fallback_mode: stopped
+    timeouts.slam_status_s: 2.0
+
     map_to_odom.allow_reinitialization: false
     map_to_odom.translation_jump_limit_m: 2.0
     map_to_odom.rotation_jump_limit_rad: 0.7853981633974483
-    map_to_odom.translation: [0.0, 0.0, 0.0]
-    map_to_odom.rotation_rpy: [0.0, 0.0, 0.0]
 
     validation.require_nonzero_stamp: true
     validation.require_monotonic_stamp: true
@@ -45,64 +50,79 @@ omni_tf_manager:
 
     required_sensor_roles: [lidar, imu, depth_camera, rgb_camera]
     static_transforms:
+      - imu_mount
       - lidar_mount
-      - lidar_input_alias
-      - livox_imu
       - depth_camera_link
       - depth_camera_optical
       - rgb_camera_link
       - rgb_camera_optical
 
-    # UE configuration is centimetres with +Y to the right. Values below are
-    # converted to ROS metres with +Y to the left. Confirm against the active
-    # MATRiX release before promoting this profile to authority mode.
+    # Verified against Matrix config/config.json and xgw/xgw.xml on 2026-08-21.
+    # UE sensor positions are centimetres and UE +Y is ROS -Y. The MuJoCo
+    # livox_imu site and UE LiDAR origin are identical; both have identity
+    # orientation, so Matrix FAST-LIO must use identity T_imu_lidar.
+    static_transform.imu_mount.role: imu
+    static_transform.imu_mount.parent_frame: omni_base_link
+    static_transform.imu_mount.child_frame: omni_imu_link
+    static_transform.imu_mount.translation: [0.13011, -0.02329, 0.17598]
+    static_transform.imu_mount.rotation_rpy: [0.0, 0.0, 0.0]
+
     static_transform.lidar_mount.role: lidar
-    static_transform.lidar_mount.parent_frame: scan_base_link
-    static_transform.lidar_mount.child_frame: livox_frame
-    static_transform.lidar_mount.translation: [0.13011, -0.02329, 0.17598]
+    static_transform.lidar_mount.parent_frame: omni_imu_link
+    static_transform.lidar_mount.child_frame: omni_lidar_link
+    static_transform.lidar_mount.translation: [0.0, 0.0, 0.0]
     static_transform.lidar_mount.rotation_rpy: [0.0, 0.0, 0.0]
 
-    # MATRiX PointCloud2 currently reports header.frame_id="lidar" while
-    # FAST-LIO uses livox_frame for the same physical measurement origin.
-    static_transform.lidar_input_alias.role: ""
-    static_transform.lidar_input_alias.parent_frame: livox_frame
-    static_transform.lidar_input_alias.child_frame: lidar
-    static_transform.lidar_input_alias.translation: [0.0, 0.0, 0.0]
-    static_transform.lidar_input_alias.rotation_rpy: [0.0, 0.0, 0.0]
-
-    # The MATRiX livox IMU site is colocated with the simulated LiDAR.
-    static_transform.livox_imu.role: imu
-    static_transform.livox_imu.parent_frame: livox_frame
-    static_transform.livox_imu.child_frame: livox_imu_link
-    static_transform.livox_imu.translation: [0.0, 0.0, 0.0]
-    static_transform.livox_imu.rotation_rpy: [0.0, 0.0, 0.0]
-
     static_transform.depth_camera_link.role: depth_camera
-    static_transform.depth_camera_link.parent_frame: scan_base_link
-    static_transform.depth_camera_link.child_frame: depth_camera_link
+    static_transform.depth_camera_link.parent_frame: omni_base_link
+    static_transform.depth_camera_link.child_frame: omni_depth_camera_link
     static_transform.depth_camera_link.translation: [0.29, 0.0, 0.01]
     static_transform.depth_camera_link.rotation_rpy: [0.0, 0.2617993877991494, 0.0]
 
     static_transform.depth_camera_optical.role: ""
-    static_transform.depth_camera_optical.parent_frame: depth_camera_link
-    static_transform.depth_camera_optical.child_frame: depth_camera_optical_frame
+    static_transform.depth_camera_optical.parent_frame: omni_depth_camera_link
+    static_transform.depth_camera_optical.child_frame: omni_depth_camera_optical_frame
     static_transform.depth_camera_optical.translation: [0.0, 0.0, 0.0]
     static_transform.depth_camera_optical.rotation_rpy: [-1.5707963267948966, 0.0, -1.5707963267948966]
 
-    # Current MATRiX depth messages have been observed with frame_id="map".
-    # Fix the simulator publisher to depth_camera_optical_frame before using
-    # depth data in TF-based fusion; the manager never relabels sensor data.
-
-    # The current MATRiX RGB message uses frame_id="front". Treat front as
-    # the mechanical camera link and provide a REP-103 optical child frame.
     static_transform.rgb_camera_link.role: rgb_camera
-    static_transform.rgb_camera_link.parent_frame: scan_base_link
-    static_transform.rgb_camera_link.child_frame: front
+    static_transform.rgb_camera_link.parent_frame: omni_base_link
+    static_transform.rgb_camera_link.child_frame: omni_rgb_camera_link
     static_transform.rgb_camera_link.translation: [0.29, 0.0, 0.01]
     static_transform.rgb_camera_link.rotation_rpy: [0.0, 0.2617993877991494, 0.0]
 
     static_transform.rgb_camera_optical.role: ""
-    static_transform.rgb_camera_optical.parent_frame: front
-    static_transform.rgb_camera_optical.child_frame: rgb_camera_optical_frame
+    static_transform.rgb_camera_optical.parent_frame: omni_rgb_camera_link
+    static_transform.rgb_camera_optical.child_frame: omni_rgb_camera_optical_frame
     static_transform.rgb_camera_optical.translation: [0.0, 0.0, 0.0]
     static_transform.rgb_camera_optical.rotation_rpy: [-1.5707963267948966, 0.0, -1.5707963267948966]
+
+    # Matrix sensor publishers are precompiled and still emit legacy frame IDs.
+    # These typed relays are part of this single manager process; they validate
+    # the legacy source frame before publishing a canonical Omni message.
+    sensor_relays: [lidar, imu, depth, rgb]
+    sensor_relay.lidar.type: pointcloud2
+    sensor_relay.lidar.input_topic: /livox/lidar
+    sensor_relay.lidar.output_topic: /omni/sensors/lidar/points
+    sensor_relay.lidar.input_frame: lidar
+    sensor_relay.lidar.output_frame: omni_lidar_link
+
+    sensor_relay.imu.type: imu
+    sensor_relay.imu.input_topic: /livox/imu
+    sensor_relay.imu.output_topic: /omni/sensors/imu/data
+    sensor_relay.imu.input_frame: livox_imu_link
+    sensor_relay.imu.output_frame: omni_imu_link
+
+    # Matrix docs define depth cloudmode=false as sensor_msgs/Image even though
+    # this installation's legacy topic contains the word "compressed".
+    sensor_relay.depth.type: image
+    sensor_relay.depth.input_topic: /image_raw/compressed/depth
+    sensor_relay.depth.output_topic: /omni/sensors/depth/image
+    sensor_relay.depth.input_frame: map
+    sensor_relay.depth.output_frame: omni_depth_camera_optical_frame
+
+    sensor_relay.rgb.type: compressed_image
+    sensor_relay.rgb.input_topic: /image_raw/compressed
+    sensor_relay.rgb.output_topic: /omni/sensors/rgb/image/compressed
+    sensor_relay.rgb.input_frame: front
+    sensor_relay.rgb.output_frame: omni_rgb_camera_optical_frame

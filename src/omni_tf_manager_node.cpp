@@ -12,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -21,10 +22,15 @@
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <diagnostic_msgs/msg/key_value.hpp>
-#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <omni_slam_interfaces/msg/slam_status.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/msg/compressed_image.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_msgs/msg/bool.hpp>
 
 #include "omni_tf_manager/configuration.hpp"
@@ -72,10 +78,44 @@ bool validMode(const std::string & mode)
   return mode == "shadow" || mode == "authority";
 }
 
-bool validMapSource(const std::string & source)
+enum class SlamMode : std::uint8_t
 {
-  return source == "icp_pose" || source == "identity" ||
-         source == "parameter" || source == "disabled";
+  kStopped = omni_slam_interfaces::msg::SlamStatus::MODE_STOPPED,
+  kMapping = omni_slam_interfaces::msg::SlamStatus::MODE_MAPPING,
+  kLocalization = omni_slam_interfaces::msg::SlamStatus::MODE_LOCALIZATION,
+};
+
+bool validSlamMode(std::uint8_t mode)
+{
+  return mode <= omni_slam_interfaces::msg::SlamStatus::MODE_LOCALIZATION;
+}
+
+SlamMode parseSlamMode(const std::string & mode)
+{
+  if (mode == "stopped") {
+    return SlamMode::kStopped;
+  }
+  if (mode == "mapping") {
+    return SlamMode::kMapping;
+  }
+  if (mode == "localization") {
+    return SlamMode::kLocalization;
+  }
+  throw std::invalid_argument(
+          "slam_state.fallback_mode must be stopped, mapping or localization");
+}
+
+std::string slamModeName(SlamMode mode)
+{
+  switch (mode) {
+    case SlamMode::kMapping:
+      return "mapping";
+    case SlamMode::kLocalization:
+      return "localization";
+    case SlamMode::kStopped:
+    default:
+      return "stopped";
+  }
 }
 
 }  // namespace
@@ -94,6 +134,8 @@ public:
       throw std::invalid_argument("invalid static TF profile: " + tree_result.error);
     }
     body_to_tracking_ = resolveTransform(static_transforms_, base_frame_, tracking_frame_);
+    tracking_to_icp_sensor_ = resolveTransform(
+      static_transforms_, tracking_frame_, icp_sensor_frame_);
 
     if (authorityMode()) {
       tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -109,21 +151,25 @@ public:
     ready_pub_ = create_publisher<std_msgs::msg::Bool>(
       ready_topic_, rclcpp::QoS(1).reliable().transient_local());
 
+    configureSensorRelays();
+
     sensor_odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
       sensor_odom_topic_, rclcpp::SensorDataQoS(),
       std::bind(&OmniTfManagerNode::sensorOdomCallback, this, std::placeholders::_1));
 
-    if (map_to_odom_source_ == "icp_pose") {
-      icp_pose_sub_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
-        icp_pose_topic_, rclcpp::QoS(10).reliable(),
-        std::bind(&OmniTfManagerNode::icpPoseCallback, this, std::placeholders::_1));
-    }
+    icp_pose_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+      icp_pose_topic_, rclcpp::QoS(10).reliable(),
+      std::bind(&OmniTfManagerNode::icpPoseCallback, this, std::placeholders::_1));
+    slam_status_sub_ = create_subscription<omni_slam_interfaces::msg::SlamStatus>(
+      slam_status_topic_, rclcpp::QoS(1).reliable().transient_local(),
+      std::bind(&OmniTfManagerNode::slamStatusCallback, this, std::placeholders::_1));
 
-    initializeConfiguredMapTransform();
+    if (!require_slam_status_) {
+      transitionToSlamMode(fallback_slam_mode_, 0U, "configured fallback");
+    }
 
     if (authorityMode()) {
       publishSensorStaticTransforms();
-      publishMapToOdomTransform();
     }
 
     const auto period = std::chrono::duration<double>(diagnostics_period_s_);
@@ -142,6 +188,7 @@ private:
     profile_name_ = declare_parameter<std::string>("profile_name", "unconfigured");
     profile_version_ = declare_parameter<std::string>("profile_version", "0.0.0");
     calibration_id_ = declare_parameter<std::string>("calibration_id", "unverified");
+    require_omni_prefix_ = declare_parameter<bool>("naming.require_omni_prefix", true);
     if (!validMode(mode_)) {
       throw std::invalid_argument("mode must be 'shadow' or 'authority'");
     }
@@ -149,18 +196,29 @@ private:
       throw std::invalid_argument("profile identity parameters must not be empty");
     }
 
-    map_frame_ = declare_parameter<std::string>("frames.map", "lio_map");
-    odom_frame_ = declare_parameter<std::string>("frames.odom", "lio_odom");
-    base_frame_ = declare_parameter<std::string>("frames.base", "scan_base_link");
-    tracking_frame_ = declare_parameter<std::string>("frames.tracking", "livox_frame");
+    map_frame_ = declare_parameter<std::string>("frames.map", "omni_map");
+    odom_frame_ = declare_parameter<std::string>("frames.odom", "omni_odom");
+    base_frame_ = declare_parameter<std::string>("frames.base", "omni_base_link");
+    tracking_frame_ = declare_parameter<std::string>("frames.tracking", "omni_imu_link");
+    icp_sensor_frame_ = declare_parameter<std::string>(
+      "frames.icp_sensor", "omni_lidar_link");
     if (!validFrameId(map_frame_) || !validFrameId(odom_frame_) ||
-      !validFrameId(base_frame_) || !validFrameId(tracking_frame_))
+      !validFrameId(base_frame_) || !validFrameId(tracking_frame_) ||
+      !validFrameId(icp_sensor_frame_))
     {
       throw std::invalid_argument(
               "core frame names must be valid relative TF frame IDs without whitespace");
     }
-    if (odom_frame_ == base_frame_ || map_frame_ == base_frame_) {
-      throw std::invalid_argument("map, odom and base frame roles must not alias base");
+    if (require_omni_prefix_ &&
+      (map_frame_.rfind("omni_", 0U) != 0U || odom_frame_.rfind("omni_", 0U) != 0U ||
+      base_frame_.rfind("omni_", 0U) != 0U || tracking_frame_.rfind("omni_", 0U) != 0U ||
+      icp_sensor_frame_.rfind("omni_", 0U) != 0U))
+    {
+      throw std::invalid_argument(
+              "core frame names must begin with 'omni_' when naming.require_omni_prefix=true");
+    }
+    if (map_frame_ == odom_frame_ || odom_frame_ == base_frame_ || map_frame_ == base_frame_) {
+      throw std::invalid_argument("map, odom and base frame roles must be distinct");
     }
     if (tracking_frame_ != base_frame_ &&
       (tracking_frame_ == map_frame_ || tracking_frame_ == odom_frame_))
@@ -171,13 +229,15 @@ private:
     sensor_odom_topic_ = declare_parameter<std::string>(
       "topics.sensor_odom", "/state_estimation");
     icp_pose_topic_ = declare_parameter<std::string>("topics.icp_pose", "/icp_result");
+    slam_status_topic_ = declare_parameter<std::string>(
+      "topics.slam_status", "/omni/slam/status");
     local_body_odom_topic_ = declare_parameter<std::string>(
       "topics.local_body_odom", "/omni/tf_manager/body_odom");
     global_body_odom_topic_ = declare_parameter<std::string>(
       "topics.global_body_odom", "/omni/tf_manager/body_odom_global");
     diagnostics_topic_ = declare_parameter<std::string>("topics.diagnostics", "/diagnostics");
     ready_topic_ = declare_parameter<std::string>("topics.ready", "/omni/tf_manager/ready");
-    if (sensor_odom_topic_.empty() || icp_pose_topic_.empty() ||
+    if (sensor_odom_topic_.empty() || icp_pose_topic_.empty() || slam_status_topic_.empty() ||
       local_body_odom_topic_.empty() || global_body_odom_topic_.empty() ||
       diagnostics_topic_.empty() || ready_topic_.empty())
     {
@@ -194,35 +254,16 @@ private:
     publish_global_body_odom_ = declare_parameter<bool>("publish.global_body_odom", true);
     add_map_covariance_ = declare_parameter<bool>("publish.add_map_covariance", false);
 
-    map_to_odom_source_ = declare_parameter<std::string>(
-      "map_to_odom.source", "icp_pose");
-    if (!validMapSource(map_to_odom_source_)) {
-      throw std::invalid_argument(
-              "map_to_odom.source must be icp_pose, identity, parameter or disabled");
-    }
-    map_to_odom_is_static_ = declare_parameter<bool>("map_to_odom.is_static", true);
+    require_slam_status_ = declare_parameter<bool>("slam_state.required", true);
+    fallback_slam_mode_ = parseSlamMode(
+      declare_parameter<std::string>("slam_state.fallback_mode", "stopped"));
+    slam_status_timeout_s_ = declare_parameter<double>("timeouts.slam_status_s", 2.0);
     allow_map_reinitialization_ = declare_parameter<bool>(
       "map_to_odom.allow_reinitialization", false);
-    if (map_to_odom_is_static_ && allow_map_reinitialization_) {
-      throw std::invalid_argument(
-              "map reinitialization requires map_to_odom.is_static=false");
-    }
-    if (map_frame_ != odom_frame_ && map_to_odom_source_ == "disabled" &&
-      publish_global_body_odom_)
-    {
-      throw std::invalid_argument(
-              "global body odometry requires a map-to-odom source");
-    }
     map_translation_jump_limit_m_ = declare_parameter<double>(
       "map_to_odom.translation_jump_limit_m", 2.0);
     map_rotation_jump_limit_rad_ = declare_parameter<double>(
       "map_to_odom.rotation_jump_limit_rad", 0.7853981633974483);
-    configured_map_translation_ = declare_parameter<std::vector<double>>(
-      "map_to_odom.translation", {0.0, 0.0, 0.0});
-    configured_map_rotation_rpy_ = declare_parameter<std::vector<double>>(
-      "map_to_odom.rotation_rpy", {0.0, 0.0, 0.0});
-    requireVectorSize(configured_map_translation_, 3U, "map_to_odom.translation");
-    requireVectorSize(configured_map_rotation_rpy_, 3U, "map_to_odom.rotation_rpy");
 
     require_nonzero_stamp_ = declare_parameter<bool>("validation.require_nonzero_stamp", true);
     require_monotonic_stamp_ = declare_parameter<bool>(
@@ -247,6 +288,7 @@ private:
       map_translation_jump_limit_m_, "map_to_odom.translation_jump_limit_m");
     requireFiniteNonnegative(
       map_rotation_jump_limit_rad_, "map_to_odom.rotation_jump_limit_rad");
+    requireFiniteNonnegative(slam_status_timeout_s_, "timeouts.slam_status_s");
     requireFiniteNonnegative(max_input_age_s_, "validation.max_input_age_s");
     requireFiniteNonnegative(max_icp_age_s_, "validation.max_icp_age_s");
     requireFiniteNonnegative(max_future_offset_s_, "validation.max_future_offset_s");
@@ -261,7 +303,8 @@ private:
               "validation.quaternion_norm_tolerance must be in [0.0, 0.5)");
     }
     if (!std::isfinite(diagnostics_period_s_) || !std::isfinite(sensor_timeout_s_) ||
-      diagnostics_period_s_ <= 0.0 || sensor_timeout_s_ <= 0.0)
+      diagnostics_period_s_ <= 0.0 || sensor_timeout_s_ <= 0.0 ||
+      (require_slam_status_ && slam_status_timeout_s_ <= 0.0))
     {
       throw std::invalid_argument("diagnostics and timeout periods must be positive");
     }
@@ -282,6 +325,14 @@ private:
       spec.role = declare_parameter<std::string>(prefix + "role", "");
       spec.parent_frame = declare_parameter<std::string>(prefix + "parent_frame", "");
       spec.child_frame = declare_parameter<std::string>(prefix + "child_frame", "");
+      if (require_omni_prefix_ &&
+        (spec.parent_frame.rfind("omni_", 0U) != 0U ||
+        spec.child_frame.rfind("omni_", 0U) != 0U))
+      {
+        throw std::invalid_argument(
+                "static TF frames must begin with 'omni_': " + spec.parent_frame + " -> " +
+                spec.child_frame);
+      }
       if (spec.child_frame == map_frame_ || spec.child_frame == odom_frame_) {
         throw std::invalid_argument(
                 "static transform child must not claim map/odom frame: " + spec.child_frame);
@@ -298,6 +349,95 @@ private:
         rotation_rpy[0], rotation_rpy[1], rotation_rpy[2]);
       static_transforms_.push_back(std::move(spec));
     }
+  }
+
+  template<typename MessageT>
+  void addHeaderRelay(
+    const std::string & id, const std::string & input_topic,
+    const std::string & output_topic, const std::string & expected_input_frame,
+    const std::string & output_frame)
+  {
+    auto publisher = create_publisher<MessageT>(output_topic, rclcpp::SensorDataQoS());
+    auto subscription = create_subscription<MessageT>(
+      input_topic, rclcpp::SensorDataQoS(),
+      [this, id, publisher, expected_input_frame, output_frame](
+        const typename MessageT::ConstSharedPtr message)
+      {
+        if (!message) {
+          return;
+        }
+        if (!expected_input_frame.empty() &&
+          message->header.frame_id != expected_input_frame)
+        {
+          RCLCPP_ERROR_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Sensor relay '%s' rejected frame_id '%s'; expected '%s'",
+            id.c_str(), message->header.frame_id.c_str(), expected_input_frame.c_str());
+          return;
+        }
+        auto output = *message;
+        output.header.frame_id = output_frame;
+        publisher->publish(output);
+      });
+    sensor_relay_publishers_.push_back(publisher);
+    sensor_relay_subscriptions_.push_back(subscription);
+  }
+
+  void configureSensorRelays()
+  {
+    const auto relay_ids = declare_parameter<std::vector<std::string>>(
+      "sensor_relays", std::vector<std::string>{});
+    std::set<std::string> input_topics;
+    std::set<std::string> output_topics;
+    for (const auto & id : relay_ids) {
+      const std::string prefix = "sensor_relay." + id + ".";
+      const auto type = declare_parameter<std::string>(prefix + "type", "");
+      const auto input_topic = declare_parameter<std::string>(prefix + "input_topic", "");
+      const auto output_topic = declare_parameter<std::string>(prefix + "output_topic", "");
+      const auto input_frame = declare_parameter<std::string>(prefix + "input_frame", "");
+      const auto output_frame = declare_parameter<std::string>(prefix + "output_frame", "");
+      if (id.empty() || type.empty() || input_topic.empty() || output_topic.empty() ||
+        output_frame.empty())
+      {
+        throw std::invalid_argument("sensor relay fields must not be empty: " + id);
+      }
+      if (input_topic == output_topic || !input_topics.insert(input_topic).second ||
+        !output_topics.insert(output_topic).second)
+      {
+        throw std::invalid_argument("sensor relay topics must be unique: " + id);
+      }
+      if (!validFrameId(output_frame) ||
+        (require_omni_prefix_ && output_frame.rfind("omni_", 0U) != 0U))
+      {
+        throw std::invalid_argument("invalid sensor relay output frame: " + output_frame);
+      }
+      // Require the rewritten frame to exist in the reviewed static tree.
+      (void)resolveTransform(static_transforms_, base_frame_, output_frame);
+
+      if (type == "pointcloud2") {
+        addHeaderRelay<sensor_msgs::msg::PointCloud2>(
+          id, input_topic, output_topic, input_frame, output_frame);
+      } else if (type == "imu") {
+        addHeaderRelay<sensor_msgs::msg::Imu>(
+          id, input_topic, output_topic, input_frame, output_frame);
+      } else if (type == "image") {
+        addHeaderRelay<sensor_msgs::msg::Image>(
+          id, input_topic, output_topic, input_frame, output_frame);
+      } else if (type == "compressed_image") {
+        addHeaderRelay<sensor_msgs::msg::CompressedImage>(
+          id, input_topic, output_topic, input_frame, output_frame);
+      } else if (type == "camera_info") {
+        addHeaderRelay<sensor_msgs::msg::CameraInfo>(
+          id, input_topic, output_topic, input_frame, output_frame);
+      } else {
+        throw std::invalid_argument("unsupported sensor relay type '" + type + "': " + id);
+      }
+      RCLCPP_INFO(
+        get_logger(), "Sensor header relay [%s/%s]: %s (%s) -> %s (%s)",
+        id.c_str(), type.c_str(), input_topic.c_str(), input_frame.c_str(),
+        output_topic.c_str(), output_frame.c_str());
+    }
+    sensor_relay_count_ = relay_ids.size();
   }
 
   static void requireVectorSize(
@@ -324,29 +464,84 @@ private:
     return mode_ == "authority";
   }
 
-  void initializeConfiguredMapTransform()
+  bool slamStatusFresh() const
   {
-    if (map_frame_ == odom_frame_) {
-      map_to_odom_ = identityTransform();
-      map_initialized_ = true;
+    if (!require_slam_status_) {
+      return true;
+    }
+    if (!received_slam_status_) {
+      return false;
+    }
+    const double age = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - last_slam_status_receive_time_).count();
+    return age <= slam_status_timeout_s_;
+  }
+
+  SlamMode effectiveSlamMode() const
+  {
+    return slamStatusFresh() ? slam_mode_ : SlamMode::kStopped;
+  }
+
+  void transitionToSlamMode(
+    SlamMode next_mode, std::uint64_t status_sequence, const std::string & source)
+  {
+    const SlamMode previous_mode = slam_mode_;
+    const bool mode_changed = !slam_mode_initialized_ || previous_mode != next_mode;
+    slam_mode_ = next_mode;
+    slam_mode_initialized_ = true;
+    slam_status_sequence_ = status_sequence;
+    if (!mode_changed) {
       return;
     }
-    if (map_to_odom_source_ == "identity") {
+
+    received_sensor_odom_ = false;
+    have_previous_body_pose_ = false;
+    map_initialized_ = false;
+    map_to_odom_covariance_.fill(0.0);
+    last_error_.clear();
+    if (next_mode == SlamMode::kMapping) {
       map_to_odom_ = identityTransform();
       map_initialized_ = true;
-      map_stamp_ = now();
+    }
+    publishReadiness(false);
+    const std::string sequence_text = std::to_string(status_sequence);
+    RCLCPP_INFO(
+      get_logger(), "SLAM mode transition: %s -> %s (%s, sequence=%s)",
+      slamModeName(previous_mode).c_str(), slamModeName(next_mode).c_str(), source.c_str(),
+      sequence_text.c_str());
+  }
+
+  void slamStatusCallback(
+    const omni_slam_interfaces::msg::SlamStatus::ConstSharedPtr message)
+  {
+    if (!message) {
       return;
     }
-    if (map_to_odom_source_ == "parameter") {
-      map_to_odom_.translation = Eigen::Vector3d(
-        configured_map_translation_[0], configured_map_translation_[1],
-        configured_map_translation_[2]);
-      map_to_odom_.rotation = quaternionFromRpy(
-        configured_map_rotation_rpy_[0], configured_map_rotation_rpy_[1],
-        configured_map_rotation_rpy_[2]);
-      map_initialized_ = true;
-      map_stamp_ = now();
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!validSlamMode(message->mode)) {
+      last_error_ = "invalid SLAM mode " + std::to_string(message->mode);
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 2000, "%s", last_error_.c_str());
+      return;
     }
+    const bool current_status_fresh = slamStatusFresh();
+    if (current_status_fresh && message->status_sequence < slam_status_sequence_) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Ignoring out-of-order SLAM status sequence %s; current sequence is %s",
+        std::to_string(message->status_sequence).c_str(),
+        std::to_string(slam_status_sequence_).c_str());
+      return;
+    }
+    const bool recovered_from_timeout = !current_status_fresh;
+    received_slam_status_ = true;
+    last_slam_status_receive_time_ = std::chrono::steady_clock::now();
+    slam_state_ = message->state;
+    if (recovered_from_timeout) {
+      slam_mode_initialized_ = false;
+    }
+    transitionToSlamMode(
+      static_cast<SlamMode>(message->mode), message->status_sequence, slam_status_topic_);
   }
 
   bool validateStamp(
@@ -445,6 +640,15 @@ private:
     }
     std::lock_guard<std::mutex> lock(mutex_);
 
+    const SlamMode active_mode = effectiveSlamMode();
+    if (active_mode == SlamMode::kStopped) {
+      ++ignored_inactive_sensor_samples_;
+      RCLCPP_DEBUG_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Ignoring sensor odometry while SLAM is stopped or its status is stale");
+      return;
+    }
+
     if (message->header.frame_id != odom_frame_) {
       rejectSensorOdom(
         "header.frame_id='" + message->header.frame_id + "', expected '" + odom_frame_ + "'");
@@ -488,6 +692,9 @@ private:
     }
     if (authorityMode()) {
       publishDynamicTransform(odom_frame_, base_frame_, odom_to_body, message->header.stamp);
+      if (globalTransformAvailable()) {
+        publishMapToOdomTransform(message->header.stamp);
+      }
     }
 
     if (globalTransformAvailable()) {
@@ -547,15 +754,28 @@ private:
   }
 
   void icpPoseCallback(
-    const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr message)
+    const nav_msgs::msg::Odometry::ConstSharedPtr message)
   {
     if (!message) {
       return;
     }
     std::lock_guard<std::mutex> lock(mutex_);
+    if (effectiveSlamMode() != SlamMode::kLocalization) {
+      ++ignored_inactive_map_samples_;
+      RCLCPP_DEBUG_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Ignoring ICP pose outside localization mode");
+      return;
+    }
     if (message->header.frame_id != map_frame_) {
       rejectMapPose(
         "header.frame_id='" + message->header.frame_id + "', expected '" + map_frame_ + "'");
+      return;
+    }
+    if (message->child_frame_id != icp_sensor_frame_) {
+      rejectMapPose(
+        "child_frame_id='" + message->child_frame_id + "', expected '" +
+        icp_sensor_frame_ + "'");
       return;
     }
     std::string reason;
@@ -563,11 +783,16 @@ private:
       rejectMapPose(reason);
       return;
     }
-    RigidTransform candidate = fromPose(message->pose.pose);
-    if (!validatePoseTransform(candidate, reason)) {
+    RigidTransform map_to_icp_sensor = fromPose(message->pose.pose);
+    if (!validatePoseTransform(map_to_icp_sensor, reason)) {
       rejectMapPose(reason);
       return;
     }
+    // At relocalization startup FAST-LIO's odom->tracking state is identity.
+    // ICP provides T_map_icp_sensor, so normalize it through the reviewed
+    // tracking->ICP-sensor extrinsic before claiming T_map_odom.
+    const RigidTransform candidate = compose(
+      map_to_icp_sensor, inverse(tracking_to_icp_sensor_));
     if (map_initialized_) {
       if (!allow_map_reinitialization_) {
         RCLCPP_WARN_THROTTLE(
@@ -588,13 +813,14 @@ private:
     }
 
     map_to_odom_ = candidate;
-    map_to_odom_covariance_ = message->pose.covariance;
-    map_stamp_ = rclcpp::Time(message->header.stamp, get_clock()->get_clock_type());
+    map_to_odom_covariance_ = transformPoseCovarianceSensorToBase(
+      message->pose.covariance, candidate.rotation.toRotationMatrix(),
+      tracking_to_icp_sensor_.translation);
     map_initialized_ = true;
     ++accepted_map_samples_;
     last_error_.clear();
     if (authorityMode()) {
-      publishMapToOdomTransform();
+      publishMapToOdomTransform(message->header.stamp);
     }
     publishReadiness(computeReady());
     RCLCPP_INFO(
@@ -612,11 +838,14 @@ private:
 
   bool globalTransformAvailable() const
   {
-    return map_frame_ == odom_frame_ || map_initialized_;
+    return effectiveSlamMode() != SlamMode::kStopped && map_initialized_;
   }
 
   bool computeReady() const
   {
+    if (effectiveSlamMode() == SlamMode::kStopped) {
+      return false;
+    }
     if (!received_sensor_odom_) {
       return false;
     }
@@ -642,23 +871,12 @@ private:
     tf_broadcaster_->sendTransform(message);
   }
 
-  void publishMapToOdomTransform()
+  void publishMapToOdomTransform(const builtin_interfaces::msg::Time & stamp)
   {
-    if (!authorityMode() || !map_initialized_ || map_frame_ == odom_frame_ ||
-      map_to_odom_source_ == "disabled")
-    {
+    if (!authorityMode() || !map_initialized_ || effectiveSlamMode() == SlamMode::kStopped) {
       return;
     }
-    geometry_msgs::msg::TransformStamped message;
-    message.header.stamp = map_to_odom_is_static_ ? now() : map_stamp_;
-    message.header.frame_id = map_frame_;
-    message.child_frame_id = odom_frame_;
-    message.transform = toTransform(map_to_odom_);
-    if (map_to_odom_is_static_) {
-      static_tf_broadcaster_->sendTransform(message);
-    } else {
-      tf_broadcaster_->sendTransform(message);
-    }
+    publishDynamicTransform(map_frame_, odom_frame_, map_to_odom_, stamp);
   }
 
   void publishSensorStaticTransforms()
@@ -695,10 +913,6 @@ private:
   void diagnosticsTimerCallback()
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (authorityMode() && map_initialized_ && !map_to_odom_is_static_) {
-      map_stamp_ = now();
-      publishMapToOdomTransform();
-    }
     const bool ready = computeReady();
     publishReadiness(ready);
 
@@ -715,13 +929,25 @@ private:
       status.message = last_error_;
     } else {
       status.level = kDiagnosticWarn;
-      status.message = received_sensor_odom_ ?
-        "waiting for fresh odometry or map alignment" : "waiting for sensor odometry";
+      if (!slamStatusFresh()) {
+        status.message = received_slam_status_ ?
+          "SLAM status timed out" : "waiting for SLAM status";
+      } else if (effectiveSlamMode() == SlamMode::kStopped) {
+        status.message = "SLAM stopped; dynamic TF disabled";
+      } else {
+        status.message = received_sensor_odom_ ?
+          "waiting for fresh odometry or map alignment" : "waiting for sensor odometry";
+      }
     }
     const double sensor_age = received_sensor_odom_ ?
       std::chrono::duration<double>(
       std::chrono::steady_clock::now() - last_sensor_receive_time_).count() : -1.0;
     status.values.push_back(keyValue("mode", mode_));
+    status.values.push_back(keyValue("slam_mode", slamModeName(effectiveSlamMode())));
+    status.values.push_back(keyValue("slam_state", std::to_string(slam_state_)));
+    status.values.push_back(
+      keyValue("slam_status_sequence", std::to_string(slam_status_sequence_)));
+    status.values.push_back(keyValue("slam_status_fresh", boolString(slamStatusFresh())));
     status.values.push_back(keyValue("profile", profile_name_));
     status.values.push_back(keyValue("profile_version", profile_version_));
     status.values.push_back(keyValue("calibration_id", calibration_id_));
@@ -730,6 +956,7 @@ private:
     status.values.push_back(keyValue("odom_frame", odom_frame_));
     status.values.push_back(keyValue("base_frame", base_frame_));
     status.values.push_back(keyValue("tracking_frame", tracking_frame_));
+    status.values.push_back(keyValue("icp_sensor_frame", icp_sensor_frame_));
     status.values.push_back(keyValue("map_initialized", boolString(map_initialized_)));
     status.values.push_back(keyValue("sensor_age_s", doubleString(sensor_age)));
     status.values.push_back(
@@ -740,13 +967,22 @@ private:
         "rejected_sensor_samples", std::to_string(rejected_sensor_samples_)));
     status.values.push_back(
       keyValue(
+        "ignored_inactive_sensor_samples",
+        std::to_string(ignored_inactive_sensor_samples_)));
+    status.values.push_back(
+      keyValue(
         "accepted_map_samples", std::to_string(accepted_map_samples_)));
     status.values.push_back(
       keyValue(
         "rejected_map_samples", std::to_string(rejected_map_samples_)));
     status.values.push_back(
       keyValue(
+        "ignored_inactive_map_samples", std::to_string(ignored_inactive_map_samples_)));
+    status.values.push_back(
+      keyValue(
         "static_transform_count", std::to_string(static_transforms_.size())));
+    status.values.push_back(
+      keyValue("sensor_relay_count", std::to_string(sensor_relay_count_)));
     array.status.push_back(std::move(status));
     diagnostics_pub_->publish(array);
   }
@@ -756,6 +992,10 @@ private:
     RCLCPP_INFO(
       get_logger(), "omni_tf_manager profile='%s' mode='%s'",
       profile_name_.c_str(), mode_.c_str());
+    RCLCPP_INFO(
+      get_logger(), "SLAM state source: %s%s",
+      require_slam_status_ ? slam_status_topic_.c_str() : "fallback parameter: ",
+      require_slam_status_ ? "" : slamModeName(fallback_slam_mode_).c_str());
     RCLCPP_INFO(
       get_logger(), "Candidate dynamic chain: %s -> %s -> %s (tracking input: %s)",
       map_frame_.c_str(), odom_frame_.c_str(), base_frame_.c_str(), tracking_frame_.c_str());
@@ -781,24 +1021,27 @@ private:
   std::string odom_frame_;
   std::string base_frame_;
   std::string tracking_frame_;
+  std::string icp_sensor_frame_;
   std::string sensor_odom_topic_;
   std::string icp_pose_topic_;
+  std::string slam_status_topic_;
   std::string local_body_odom_topic_;
   std::string global_body_odom_topic_;
   std::string diagnostics_topic_;
   std::string ready_topic_;
-  std::string map_to_odom_source_;
 
   bool publish_local_body_odom_{true};
   bool publish_global_body_odom_{true};
   bool add_map_covariance_{false};
-  bool map_to_odom_is_static_{true};
+  bool require_omni_prefix_{true};
+  bool require_slam_status_{true};
   bool allow_map_reinitialization_{false};
   bool require_nonzero_stamp_{true};
   bool require_monotonic_stamp_{true};
 
   double map_translation_jump_limit_m_{2.0};
   double map_rotation_jump_limit_rad_{0.7853981633974483};
+  double slam_status_timeout_s_{2.0};
   double max_input_age_s_{1.0};
   double max_icp_age_s_{30.0};
   double max_future_offset_s_{0.1};
@@ -810,15 +1053,21 @@ private:
   double sensor_timeout_s_{0.5};
   double diagnostics_period_s_{0.5};
 
-  std::vector<double> configured_map_translation_;
-  std::vector<double> configured_map_rotation_rpy_;
   std::vector<std::string> required_sensor_roles_;
   std::vector<StaticTransformSpec> static_transforms_;
   RigidTransform body_to_tracking_;
+  RigidTransform tracking_to_icp_sensor_;
   RigidTransform map_to_odom_;
   Covariance6d map_to_odom_covariance_{};
-  rclcpp::Time map_stamp_{0, 0, RCL_ROS_TIME};
   bool map_initialized_{false};
+
+  SlamMode fallback_slam_mode_{SlamMode::kStopped};
+  SlamMode slam_mode_{SlamMode::kStopped};
+  std::uint8_t slam_state_{omni_slam_interfaces::msg::SlamStatus::STATE_STOPPED};
+  std::uint64_t slam_status_sequence_{0U};
+  std::chrono::steady_clock::time_point last_slam_status_receive_time_{};
+  bool slam_mode_initialized_{false};
+  bool received_slam_status_{false};
 
   RigidTransform previous_odom_to_body_;
   rclcpp::Time previous_body_stamp_{0, 0, RCL_ROS_TIME};
@@ -829,8 +1078,11 @@ private:
   bool have_published_ready_{false};
   std::uint64_t accepted_sensor_samples_{0U};
   std::uint64_t rejected_sensor_samples_{0U};
+  std::uint64_t ignored_inactive_sensor_samples_{0U};
   std::uint64_t accepted_map_samples_{0U};
   std::uint64_t rejected_map_samples_{0U};
+  std::uint64_t ignored_inactive_map_samples_{0U};
+  std::size_t sensor_relay_count_{0U};
   std::string last_error_;
 
   std::mutex mutex_;
@@ -841,7 +1093,10 @@ private:
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ready_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sensor_odom_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr icp_pose_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr icp_pose_sub_;
+  rclcpp::Subscription<omni_slam_interfaces::msg::SlamStatus>::SharedPtr slam_status_sub_;
+  std::vector<rclcpp::PublisherBase::SharedPtr> sensor_relay_publishers_;
+  std::vector<rclcpp::SubscriptionBase::SharedPtr> sensor_relay_subscriptions_;
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;
 };
 

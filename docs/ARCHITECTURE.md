@@ -1,113 +1,100 @@
 # Architecture and safety contract
 
-## Ownership boundary
+## Decision
 
-`omni_tf_manager` owns only the robot's localization spine and calibrated
-sensor mounts:
+The deployed system uses one TF-management component, not separate static,
+dynamic and SLAM adapter nodes. `omni_tf_manager` publishes all fixed sensor
+edges and both dynamic localization edges. `omni_slam` keeps its existing
+state machine and typed status, and only calculates pose/alignment data.
 
-| Edge | Source data | Authority |
+This is a deliberate product-specific extension of the generic monitor-only
+proposal in `ROS2_通用_TF_管理模块设计方案.md`. The profile format remains robot
+agnostic, but the runtime authority consumes the stable Omni SLAM status
+contract.
+
+## Edge ownership
+
+| Edge | Source | Sole authority |
 |---|---|---|
-| `map -> odom` | ICP result or configured alignment | `omni_tf_manager` |
-| `odom -> base` | tracking-sensor odometry + extrinsic | `omni_tf_manager` |
-| `base -> sensor` | versioned robot profile | `omni_tf_manager` |
-| camera link -> optical | REP-103 profile transform | `omni_tf_manager` |
+| `omni_map -> omni_odom` | identity in mapping; normalized ICP sensor pose in localization | `omni_tf_manager` |
+| `omni_odom -> omni_base_link` | SLAM IMU pose plus calibrated lever arm | `omni_tf_manager` |
+| body/IMU/LiDAR/camera fixed edges | versioned robot profile | `omni_tf_manager` |
+| articulated joint edges | joint state | `robot_state_publisher` |
 
-The following remain outside this package:
+FAST_LIO and ICP are forbidden from broadcasting an edge in the managed tree.
+FAST_LIO `publish.tf_en` is false and the old ICP transform publisher is no
+longer built or launched.
 
-- joint transforms: `robot_state_publisher`;
-- `sliding_map`: SCAN-Planner grid-map implementation;
-- temporary mission/checkpoint frames: mission owner;
-- tool frames driven by joints: robot description/state publisher.
+## State behavior
 
-No other process may publish a child frame owned by this manager while it runs
-in authority mode.
+The manager requests reliable, transient-local `/omni/slam/status`. Missing or
+stale status is fail-closed and equivalent to stopped.
 
-## Modes
+- stopped: keep static TF, clear dynamic session state, publish ready=false;
+- mapping: initialize `T_map_odom` to identity for the epoch;
+- localization: clear alignment and wait for the first valid ICP result;
+- mode transition: clear prior odometry continuity and alignment state.
 
-### Shadow
+`timeouts.slam_status_s` prevents a crashed SLAM manager from leaving fresh
+dynamic TF traffic. Previously published dynamic samples expire naturally.
+Standalone simulation may set `slam_state.required=false` and an explicit
+fallback mode; production launch must use status-driven operation.
 
-Shadow is the mandatory first deployment phase. It subscribes to production
-inputs, validates the profile and publishes candidate body odometry and
-diagnostics, but never writes `/tf` or `/tf_static`.
+## Pose semantics
 
-### Authority
+FAST_LIO `state_point.pos/rot` describes the IMU pose. Its body-frame point
+cloud is also converted into IMU coordinates. Therefore:
 
-Authority publishes the configured static tree, `odom -> base`, and optionally
-`map -> odom`. It must only be enabled after a graph audit and shutdown of
-legacy broadcasters.
+```text
+/state_estimation.header.frame_id = frames.odom
+/state_estimation.child_frame_id  = frames.tracking (IMU)
+```
 
-## Coordinate convention
+Labeling this pose as a LiDAR frame and then applying `base -> LiDAR` creates a
+systematic body-position error. The manager instead resolves
+`T_base_tracking` through the configured static tree.
 
-- right-handed ROS REP-103;
-- +X forward, +Y left, +Z up for robot mechanical frames;
-- metres and radians in every profile;
-- camera optical frames use +Z forward, +X right, +Y down;
-- a simulator/vendor coordinate conversion is performed before values enter a
-  profile and must be documented with the profile.
+ICP publishes an odometry-shaped transform with an explicit child:
 
-The manager deliberately does not guess units, handedness or degrees versus
-radians. Ambiguous input is a configuration error.
+```text
+/icp_result.header.frame_id = frames.map
+/icp_result.child_frame_id  = frames.icp_sensor (LiDAR)
+/icp_result.pose            = T_map_icp_sensor
+```
+
+The manager resolves the reviewed `T_tracking_icp_sensor` from the static
+tree and computes `T_map_odom = T_map_icp_sensor × inverse(T_tracking_icp_sensor)`
+for the new localization epoch. A raw LiDAR pose is never relabeled as odom.
+
+For closed-source simulators, optional typed relays in this same process
+validate legacy sensor `frame_id` values and republish canonical Omni headers.
+They do not create TF edges and are not additional nodes.
 
 ## Validation and failure policy
 
-The process fails during startup for:
+Startup fails for invalid/duplicate/disconnected/cyclic static transforms,
+missing sensor roles, non-finite values, aliased core frames or naming-policy
+violations. Runtime samples are rejected for wrong frames, invalid timestamps,
+bad quaternion norms, impossible motion jumps or unsafe ICP reinitialization.
 
-- missing required sensor roles;
-- duplicate static child frames;
-- disconnected or cyclic static transforms;
-- non-finite extrinsics;
-- missing tracking frame;
-- invalid operating mode or map-alignment source.
+Readiness requires an active, fresh SLAM mode, fresh accepted odometry and (in
+localization) a valid map alignment. Motion authorization should consume
+readiness rather than infer health from topic existence.
 
-Individual runtime samples are rejected for:
+## Coordinate convention
 
-- wrong parent/child frame;
-- zero, stale, future or non-monotonic timestamps;
-- invalid/non-normalized quaternions;
-- translation or rotation jumps outside configured motion bounds;
-- map reinitialization outside configured alignment bounds.
+- ROS REP-103 right-handed mechanical frames: +X forward, +Y left, +Z up;
+- metres and radians;
+- camera optical frames: +Z forward, +X right, +Y down;
+- every vendor/simulator conversion is completed before values enter a
+  profile and recorded in its calibration metadata.
 
-Readiness becomes false when body odometry is stale or a required map alignment
-has not initialized. Autonomous motion authorization should consume
-`/omni/tf_manager/ready`; topic existence alone is not sufficient.
+## Production gates
 
-## Map alignment lifecycle
-
-The current relocalization contract treats the first accepted ICP result as
-`T_map_odom`. By default it is immutable for the localization epoch and is
-published through `/tf_static`.
-
-If runtime relocalization is introduced, configure:
-
-```yaml
-map_to_odom.is_static: false
-map_to_odom.allow_reinitialization: true
-```
-
-and define product-specific jump limits. Mission control must stop the robot
-before accepting a discontinuous global correction.
-
-## Covariance
-
-- lever-arm coupling is applied when converting sensor pose covariance to the
-  body origin;
-- twist and twist covariance are rotated into the body frame and corrected for
-  the lever arm;
-- local body covariance is rotated into the global map frame;
-- ICP covariance can be added to global pose covariance as a conservative
-  approximation with `publish.add_map_covariance=true`.
-
-The optional addition assumes independence and should be replaced by a
-correlated estimator if tighter uncertainty consistency is required.
-
-## Production deployment expectations
-
-- profiles are version controlled and reviewed like source code;
-- `profile_version` and `calibration_id` are exposed in diagnostics and must
-  identify the deployed calibration artifact;
-- every physical unit has a calibration record and checksum;
-- authority mode is started by the system orchestrator before SLAM emits its
-  one-shot ICP result;
-- `/diagnostics` and readiness feed the safety/mission supervisor;
-- a rosbag regression verifies each supported robot profile;
-- duplicate-edge and stale-odometry fault injection are release gates.
+- exactly one publisher for every managed child frame;
+- all managed frame and node names begin with `omni_`;
+- calibrated profile/version/checksum tied to the deployed robot;
+- stationary, forward, yaw and slope rosbag regression;
+- status timeout, odometry timeout, malformed sample and process-death tests;
+- canonical sensor topics verified against the configured mechanical/optical
+  frame IDs before sensor fusion is enabled.

@@ -6,15 +6,19 @@ omni_tf_manager:
     profile_name: generic_four_sensor
     profile_version: 1.0.0
     calibration_id: TEMPLATE_NOT_CALIBRATED
+    naming.require_omni_prefix: true
     use_sim_time: false
 
-    frames.map: lio_map
-    frames.odom: lio_odom
-    frames.base: scan_base_link
-    frames.tracking: lidar_frame
+    frames.map: omni_map
+    frames.odom: omni_odom
+    frames.base: omni_base_link
+    # FAST_LIO estimates the IMU body pose, not the raw LiDAR pose.
+    frames.tracking: omni_imu_link
+    frames.icp_sensor: omni_lidar_link
 
     topics.sensor_odom: /state_estimation
     topics.icp_pose: /icp_result
+    topics.slam_status: /omni/slam/status
     topics.local_body_odom: /omni/tf_manager/body_odom
     topics.global_body_odom: /omni/tf_manager/body_odom_global
     topics.diagnostics: /diagnostics
@@ -24,13 +28,13 @@ omni_tf_manager:
     publish.global_body_odom: true
     publish.add_map_covariance: false
 
-    map_to_odom.source: icp_pose
-    map_to_odom.is_static: true
+    slam_state.required: true
+    slam_state.fallback_mode: stopped
+    timeouts.slam_status_s: 2.0
+
     map_to_odom.allow_reinitialization: false
     map_to_odom.translation_jump_limit_m: 2.0
     map_to_odom.rotation_jump_limit_rad: 0.7853981633974483
-    map_to_odom.translation: [0.0, 0.0, 0.0]
-    map_to_odom.rotation_rpy: [0.0, 0.0, 0.0]
 
     validation.require_nonzero_stamp: true
     validation.require_monotonic_stamp: true
@@ -47,46 +51,46 @@ omni_tf_manager:
 
     required_sensor_roles: [lidar, imu, depth_camera, rgb_camera]
     static_transforms:
-      - lidar
       - imu
+      - lidar
       - depth_camera_link
       - depth_camera_optical
       - rgb_camera_link
       - rgb_camera_optical
 
     # All transforms are parent -> child, translation in metres and RPY in radians.
-    static_transform.lidar.role: lidar
-    static_transform.lidar.parent_frame: scan_base_link
-    static_transform.lidar.child_frame: lidar_frame
-    static_transform.lidar.translation: [0.0, 0.0, 0.0]
-    static_transform.lidar.rotation_rpy: [0.0, 0.0, 0.0]
-
     static_transform.imu.role: imu
-    static_transform.imu.parent_frame: scan_base_link
-    static_transform.imu.child_frame: imu_link
+    static_transform.imu.parent_frame: omni_base_link
+    static_transform.imu.child_frame: omni_imu_link
     static_transform.imu.translation: [0.0, 0.0, 0.0]
     static_transform.imu.rotation_rpy: [0.0, 0.0, 0.0]
 
+    static_transform.lidar.role: lidar
+    static_transform.lidar.parent_frame: omni_imu_link
+    static_transform.lidar.child_frame: omni_lidar_link
+    static_transform.lidar.translation: [0.0, 0.0, 0.0]
+    static_transform.lidar.rotation_rpy: [0.0, 0.0, 0.0]
+
     static_transform.depth_camera_link.role: depth_camera
-    static_transform.depth_camera_link.parent_frame: scan_base_link
-    static_transform.depth_camera_link.child_frame: depth_camera_link
+    static_transform.depth_camera_link.parent_frame: omni_base_link
+    static_transform.depth_camera_link.child_frame: omni_depth_camera_link
     static_transform.depth_camera_link.translation: [0.0, 0.0, 0.0]
     static_transform.depth_camera_link.rotation_rpy: [0.0, 0.0, 0.0]
 
     static_transform.depth_camera_optical.role: ""
-    static_transform.depth_camera_optical.parent_frame: depth_camera_link
-    static_transform.depth_camera_optical.child_frame: depth_camera_optical_frame
+    static_transform.depth_camera_optical.parent_frame: omni_depth_camera_link
+    static_transform.depth_camera_optical.child_frame: omni_depth_camera_optical_frame
     static_transform.depth_camera_optical.translation: [0.0, 0.0, 0.0]
     static_transform.depth_camera_optical.rotation_rpy: [-1.5707963267948966, 0.0, -1.5707963267948966]
 
     static_transform.rgb_camera_link.role: rgb_camera
-    static_transform.rgb_camera_link.parent_frame: scan_base_link
-    static_transform.rgb_camera_link.child_frame: rgb_camera_link
+    static_transform.rgb_camera_link.parent_frame: omni_base_link
+    static_transform.rgb_camera_link.child_frame: omni_rgb_camera_link
     static_transform.rgb_camera_link.translation: [0.0, 0.0, 0.0]
     static_transform.rgb_camera_link.rotation_rpy: [0.0, 0.0, 0.0]
 
     static_transform.rgb_camera_optical.role: ""
-    static_transform.rgb_camera_optical.parent_frame: rgb_camera_link
-    static_transform.rgb_camera_optical.child_frame: rgb_camera_optical_frame
+    static_transform.rgb_camera_optical.parent_frame: omni_rgb_camera_link
+    static_transform.rgb_camera_optical.child_frame: omni_rgb_camera_optical_frame
     static_transform.rgb_camera_optical.translation: [0.0, 0.0, 0.0]
     static_transform.rgb_camera_optical.rotation_rpy: [-1.5707963267948966, 0.0, -1.5707963267948966]

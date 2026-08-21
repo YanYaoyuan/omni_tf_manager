@@ -1,7 +1,8 @@
 # Robot profile checklist
 
 Create one reviewed YAML profile per robot model and sensor installation.
-Frame names may differ between vendors; logical roles remain stable.
+Vendor message frame names may differ, but managed TF names use the `omni_`
+prefix and logical roles remain stable.
 
 ## Identity
 
@@ -19,6 +20,9 @@ Frame names may differ between vendors; logical roles remain stable.
 - navigation body frame;
 - SLAM tracking frame;
 - exact SLAM odometry parent/child contract.
+- `omni_slam_manager` is started with this file as `tf_profile_path`;
+- FAST_LIO TF publication is disabled and its pose child is the IMU tracking
+  frame.
 
 ## Required sensors
 
@@ -36,6 +40,7 @@ mechanical or optical frame.
 - maximum expected linear/angular speed;
 - timestamp age and future offset;
 - odometry timeout;
+- SLAM-status heartbeat timeout;
 - allowed localization reinitialization jump;
 - quaternion norm tolerance.
 
@@ -48,4 +53,3 @@ mechanical or optical frame.
 - camera projections align with LiDAR targets;
 - manager readiness and diagnostics reach the safety supervisor;
 - no child frame has multiple publishers in authority mode.
-

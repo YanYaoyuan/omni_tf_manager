@@ -12,7 +12,9 @@ find_package(diagnostic_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(omni_slam_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -32,7 +34,7 @@ add_executable(${PROJECT_NAME}_node src/omni_tf_manager_node.cpp)
 target_include_directories(${PROJECT_NAME}_node PRIVATE include)
 target_link_libraries(${PROJECT_NAME}_node ${PROJECT_NAME}_core Eigen3::Eigen)
 ament_target_dependencies(${PROJECT_NAME}_node
-  diagnostic_msgs geometry_msgs nav_msgs rclcpp std_msgs
+  diagnostic_msgs geometry_msgs nav_msgs omni_slam_interfaces rclcpp sensor_msgs std_msgs
   tf2 tf2_geometry_msgs tf2_ros)
 
 install(TARGETS

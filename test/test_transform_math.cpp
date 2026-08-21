@@ -42,6 +42,27 @@ TEST(TransformMath, ConvertsTrackingPoseToBodyPose)
     rotationDistance(recovered_body.rotation, odom_to_body.rotation), 0.0, kTolerance);
 }
 
+TEST(TransformMath, ConvertsIcpSensorPoseToLocalizationOrigin)
+{
+  RigidTransform map_to_tracking;
+  map_to_tracking.translation = Eigen::Vector3d(8.0, -1.5, 0.7);
+  map_to_tracking.rotation = quaternionFromRpy(0.2, -0.1, 1.1);
+
+  RigidTransform tracking_to_lidar;
+  tracking_to_lidar.translation = Eigen::Vector3d(0.13, -0.02, 0.18);
+  tracking_to_lidar.rotation = quaternionFromRpy(-0.03, 0.04, 0.01);
+  const auto map_to_lidar = compose(map_to_tracking, tracking_to_lidar);
+
+  const auto recovered_map_to_odom = compose(
+    map_to_lidar, inverse(tracking_to_lidar));
+  EXPECT_NEAR(
+    (recovered_map_to_odom.translation - map_to_tracking.translation).norm(),
+    0.0, kTolerance);
+  EXPECT_NEAR(
+    rotationDistance(recovered_map_to_odom.rotation, map_to_tracking.rotation),
+    0.0, kTolerance);
+}
+
 TEST(TransformMath, RotatesCovarianceIntoTargetWorldFrame)
 {
   Covariance6d covariance{};

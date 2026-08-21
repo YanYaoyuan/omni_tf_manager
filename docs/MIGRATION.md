@@ -1,102 +1,66 @@
-# Migration from the current TF publishers
+# Migration to the Omni TF authority
 
-Migration is edge-based. Never enable the new authority while an old process
-still publishes the same child frame.
+## Completed code cutover
 
-## Current publishers to retire or reconfigure
+| Legacy behavior | Current behavior |
+|---|---|
+| FAST_LIO always broadcasts estimator TF | `publish.tf_en=false`; odometry remains available |
+| FAST_LIO labels the IMU state as `livox_frame` | child is configurable `omni_imu_link` |
+| ICP result has no child and is treated as `map -> odom` | `/icp_result` explicitly carries `map -> LiDAR`; manager normalizes it |
+| ICP global odometry adapter | manager publishes global body odometry |
+| mapping and localization use different odom frame names | both use configured `omni_odom` |
+| distributed `lio_*`, `scan_*`, vendor core frames | one `omni_*` frame contract |
 
-| Current component | Current edge/output | Required migration |
-|---|---|---|
-| FAST-LIO `laser_mapping_node` | `lio_odom -> livox_frame` | add/use a TF-disable parameter; keep `/state_estimation` |
-| ICP `transform_publisher` | `lio_map -> lio_odom` | remove from relocalization launch |
-| ICP `global_odometry_publisher` | `/state_estimation` -> `/state_estimation_global` | retire after consumers use manager body odometry |
-| SCAN `lidar_to_body_odom` | optional `lio_map -> scan_base_link` | stop node after planner consumes manager body odometry |
-| ad-hoc static publisher | `livox_frame -> lidar` | remove; put alias in robot profile |
-| SCAN grid map | `lio_map -> sliding_map` | retain; it owns an algorithm-private frame |
-| robot state publisher | joint tree | retain, but ensure its root does not duplicate `scan_base_link` |
+The global point-cloud adapter remains because it transforms point data, not
+TF ownership. SCAN-Planner no longer publishes `sliding_map` TF.
 
-FAST-LIO currently always broadcasts its odometry TF. Authority promotion is
-blocked until that broadcaster can be disabled without disabling the odometry
-topic.
+## Deployment order
 
-The manager intentionally subscribes to local `/state_estimation`
-(`lio_odom -> tracking_sensor`). Do not feed `/state_estimation_global` back
-into it: map alignment and sensor-to-body conversion are already performed by
-the manager.
+1. Build `omni_slam` and `omni_tf_manager` in the same colcon workspace.
+2. Select one calibrated TF profile.
+3. Start `omni_tf_manager` before starting a mapping/localization epoch.
+4. Start `omni_slam_manager` with the same `tf_profile_path`.
+5. Consume `/omni/tf_manager/body_odom_global` in Planner.
+6. Remove/disable Planner body-odometry and sensor static-TF adapters.
+7. Audit `/tf` and `/tf_static` publisher counts.
 
-## Phase 1: shadow
-
-1. Build and source `omni_tf_manager`.
-2. Start the manager before SLAM/ICP, using `mode:=shadow`.
-3. Keep all existing TF publishers running.
-4. Compare candidate body odometry with the current planner body odometry.
-5. Record a bag containing inputs, both body odometries, `/tf`, `/tf_static`
-   and `/diagnostics`.
-
-Matrix example:
+Managed launch example:
 
 ```bash
-ros2 launch omni_tf_manager omni_tf_manager.launch.py \
-  config_file:="$(ros2 pkg prefix omni_tf_manager)/share/omni_tf_manager/config/matrix_xgw.yaml" \
-  mode:=shadow
+ros2 launch omni_slam_manager manager.launch.py \
+  tf_profile_path:=$(ros2 pkg prefix omni_tf_manager)/share/omni_tf_manager/config/matrix_xgw.yaml
 ```
 
-Expected candidate topics:
+Standalone Matrix mapping/relocalization scripts start the same profile in an
+explicit fallback mode. Do not also launch another TF manager; use
+`--no-tf-manager` only when an external manager already owns the tree.
 
-```bash
-ros2 topic echo /omni/tf_manager/body_odom --once
-ros2 topic echo /omni/tf_manager/body_odom_global --once
-ros2 topic echo /omni/tf_manager/ready --once
-```
-
-Acceptance criteria:
-
-- no rejected samples during nominal motion;
-- candidate `map -> base` differs from the legacy result by less than the
-  calibrated tolerance;
-- yaw sign and forward motion agree with simulator/robot ground truth;
-- readiness drops within `timeouts.sensor_odom_s` after SLAM stops;
-- no TF is published by the manager in shadow mode.
-
-## Phase 2: authority in simulation
-
-1. Stop SCAN-Planner.
-2. disable FAST-LIO TF while retaining `/state_estimation`;
-3. remove ICP `transform_publisher` from the launch;
-4. remove temporary static publishers;
-5. start `omni_tf_manager mode:=authority` before ICP;
-6. start SLAM and wait for `/omni/tf_manager/ready=true`;
-7. remap Planner body input to `/omni/tf_manager/body_odom_global`;
-8. keep Planner's `sliding_map` TF enabled.
-
-The resulting core tree must contain exactly:
+## Required graph
 
 ```text
-lio_map -> lio_odom -> scan_base_link -> sensors
+omni_map -> omni_odom -> omni_base_link
+                             ├── omni_imu_link -> omni_lidar_link
+                             ├── omni_depth_camera_link -> optical
+                             └── omni_rgb_camera_link -> optical
 ```
 
-Audit with:
+Audit commands:
 
 ```bash
 ros2 run tf2_tools view_frames
-ros2 run tf2_ros tf2_echo lio_map scan_base_link
-ros2 run tf2_ros tf2_echo scan_base_link livox_frame
+ros2 run tf2_ros tf2_echo omni_map omni_base_link
+ros2 run tf2_ros tf2_echo omni_base_link omni_lidar_link
 ros2 topic info /tf --verbose
 ros2 topic info /tf_static --verbose
+ros2 topic echo /omni/tf_manager/ready
 ```
 
-## Phase 3: planner cutover
+Acceptance requires one parent and one publisher per child, correct forward
+and yaw signs, stable sensor lever arms, timeout-driven readiness loss, and no
+`lio_map`, `lio_odom`, `scan_base_link` or `livox_frame` in the managed tree.
 
-- remove `lidar_to_body_odom` from the default Planner launch;
-- use manager global body odometry for planning and closed-loop control;
-- gate autonomous command authorization on manager readiness;
-- delete body-to-sensor constants from `run_matrix_planner.sh`;
-- select the robot profile from deployment configuration instead.
+## Remaining production work
 
-## Phase 4: real robot
-
-- create a real-robot profile from calibrated transforms, not Matrix values;
-- replay a recorded stationary/motion bag in shadow mode;
-- validate against surveyed poses and physical dimensions;
-- perform localization-loss, timestamp, process-death and transform-jump fault
-  injection before enabling autonomous motion.
+- run the stationary/forward/yaw/slope Matrix acceptance bag;
+- create reviewed profiles for each real robot and sensor installation;
+- pin released `omni_slam` and `omni_tf_manager` tags together for deployment.
