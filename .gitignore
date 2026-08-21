@@ -1,0 +1,8 @@
+build/
+install/
+log/
+.colcon/
+.vscode/
+__pycache__/
+*.py[cod]
+compile_commands.json
