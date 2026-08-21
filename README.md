@@ -91,6 +91,40 @@ the XGW MuJoCo model. Matrix's LiDAR and `livox_imu` site are co-located, so
 its FAST-LIO `T_imu_lidar` is identity. The same profile enables typed header
 normalization for the closed-source Matrix publishers.
 
+`config/omni_dog.yaml` and `config/omni_vbot_dog.yaml` define the real-dog
+LiDAR/IMU topics and reviewed 6DoF calibration sources. They intentionally ship
+in `shadow` mode with `alias_verified=false`: capture both raw message headers
+on the target robot, verify that each payload is already expressed in the
+claimed physical sensor frame, then review the profile before enabling
+`authority` mode.
+
+## Sensor frame aliases
+
+A sensor relay must declare:
+
+```yaml
+sensor_relay.lidar.operation: identity_frame_alias
+sensor_relay.lidar.alias_verified: true
+sensor_relay.lidar.input_frame: vendor_lidar_frame
+sensor_relay.lidar.output_frame: omni_lidar_link
+```
+
+`identity_frame_alias` is a metadata correction, not a TF transform: the
+message payload, timestamp and covariance remain byte-for-byte/numerically
+unchanged. Use it only when the payload already uses the axes and origin of the
+canonical physical frame. Authority mode refuses unreviewed aliases. Shadow
+mode observes and reports their actual `frame_id` but publishes no canonical
+sample while `alias_verified=false`.
+
+Capture live headers before approval:
+
+```bash
+ros2 topic echo /front_lidar --once --field header
+ros2 topic echo /front_lidar/imu --once --field header
+ros2 topic echo /lidar_points --once --field header
+ros2 topic echo /lidar_imu --once --field header
+```
+
 ## Build and test
 
 Because the manager consumes the existing typed `SlamStatus`, build the

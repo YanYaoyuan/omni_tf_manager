@@ -68,6 +68,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_configuration ${PROJECT_NAME}_core Eigen3::Eigen)
   ament_target_dependencies(test_configuration geometry_msgs)
 
+  ament_add_gtest(test_sensor_frame_alias test/test_sensor_frame_alias.cpp)
+  target_include_directories(test_sensor_frame_alias PRIVATE include)
+  ament_target_dependencies(test_sensor_frame_alias sensor_msgs)
+
   # Use explicit source paths. ament_lint_auto recursively scans build/install
   # when this single-package repository is built from its own root directory.
   find_package(ament_cmake_cppcheck REQUIRED)

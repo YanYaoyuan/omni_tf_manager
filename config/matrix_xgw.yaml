@@ -104,12 +104,16 @@ omni_tf_manager:
     # the legacy source frame before publishing a canonical Omni message.
     sensor_relays: [lidar, imu, depth, rgb]
     sensor_relay.lidar.type: pointcloud2
+    sensor_relay.lidar.operation: identity_frame_alias
+    sensor_relay.lidar.alias_verified: true
     sensor_relay.lidar.input_topic: /livox/lidar
     sensor_relay.lidar.output_topic: /omni/sensors/lidar/points
     sensor_relay.lidar.input_frame: lidar
     sensor_relay.lidar.output_frame: omni_lidar_link
 
     sensor_relay.imu.type: imu
+    sensor_relay.imu.operation: identity_frame_alias
+    sensor_relay.imu.alias_verified: true
     sensor_relay.imu.input_topic: /livox/imu
     sensor_relay.imu.output_topic: /omni/sensors/imu/data
     sensor_relay.imu.input_frame: livox_imu_link
@@ -118,12 +122,16 @@ omni_tf_manager:
     # Matrix docs define depth cloudmode=false as sensor_msgs/Image even though
     # this installation's legacy topic contains the word "compressed".
     sensor_relay.depth.type: image
+    sensor_relay.depth.operation: identity_frame_alias
+    sensor_relay.depth.alias_verified: true
     sensor_relay.depth.input_topic: /image_raw/compressed/depth
     sensor_relay.depth.output_topic: /omni/sensors/depth/image
     sensor_relay.depth.input_frame: map
     sensor_relay.depth.output_frame: omni_depth_camera_optical_frame
 
     sensor_relay.rgb.type: compressed_image
+    sensor_relay.rgb.operation: identity_frame_alias
+    sensor_relay.rgb.alias_verified: true
     sensor_relay.rgb.input_topic: /image_raw/compressed
     sensor_relay.rgb.output_topic: /omni/sensors/rgb/image/compressed
     sensor_relay.rgb.input_frame: front

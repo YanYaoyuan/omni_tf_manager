@@ -35,6 +35,12 @@ For each transform verify translation in metres, RPY in radians, direction
 `parent -> child`, handedness, and whether the message header uses the
 mechanical or optical frame.
 
+For each `identity_frame_alias` additionally record a live source-message
+header and verify that the payload is already expressed in the target physical
+frame. A matching string alone is insufficient. Keep `alias_verified=false`
+and the profile in `shadow` mode until this review is complete; header aliases
+must never be used as a substitute for rotating or translating sensor data.
+
 ## Runtime limits
 
 - maximum expected linear/angular speed;
