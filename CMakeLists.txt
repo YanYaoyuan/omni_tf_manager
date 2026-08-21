@@ -51,6 +51,8 @@ install(
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE)
 install(FILES README.md LICENSE DESTINATION share/${PROJECT_NAME})
+install(PROGRAMS tools/validate_matrix_xgw_profile.py
+  DESTINATION lib/${PROJECT_NAME})
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)

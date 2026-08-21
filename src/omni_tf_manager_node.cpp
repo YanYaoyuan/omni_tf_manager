@@ -367,7 +367,7 @@ private:
           return;
         }
         if (!expected_input_frame.empty() &&
-          message->header.frame_id != expected_input_frame)
+        message->header.frame_id != expected_input_frame)
         {
           RCLCPP_ERROR_THROTTLE(
             get_logger(), *get_clock(), 2000,

@@ -58,13 +58,15 @@ omni_tf_manager:
       - rgb_camera_optical
 
     # Verified against Matrix config/config.json and xgw/xgw.xml on 2026-08-21.
-    # UE sensor positions are centimetres and UE +Y is ROS -Y. The MuJoCo
-    # livox_imu site and UE LiDAR origin are identical; both have identity
-    # orientation, so Matrix FAST-LIO must use identity T_imu_lidar.
+    # Sensor config positions are centimetres in the robot-local convention.
+    # Their signed values match the right-handed MuJoCo model (right legs use
+    # negative Y, left legs positive Y), so they must not be negated again.
+    # The livox_imu site and LiDAR origin are identical and identity-oriented;
+    # Matrix FAST-LIO must therefore use identity T_imu_lidar.
     static_transform.imu_mount.role: imu
     static_transform.imu_mount.parent_frame: omni_base_link
     static_transform.imu_mount.child_frame: omni_imu_link
-    static_transform.imu_mount.translation: [0.13011, -0.02329, 0.17598]
+    static_transform.imu_mount.translation: [0.13011, 0.02329, 0.17598]
     static_transform.imu_mount.rotation_rpy: [0.0, 0.0, 0.0]
 
     static_transform.lidar_mount.role: lidar

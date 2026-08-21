@@ -117,6 +117,13 @@ The standalone Matrix scripts start this manager automatically with an
 explicit mapping/localization fallback mode because they do not run the SLAM
 control-plane node.
 
+Revalidate Matrix model/config/profile consistency after every simulator
+upgrade:
+
+```bash
+python3 tools/validate_matrix_xgw_profile.py
+```
+
 See [Architecture](docs/ARCHITECTURE.md),
 [Migration](docs/MIGRATION.md), and the
 [robot profile checklist](docs/ROBOT_PROFILE_CHECKLIST.md).
