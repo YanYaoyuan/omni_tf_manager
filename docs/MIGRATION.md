@@ -16,7 +16,8 @@ TF ownership. SCAN-Planner no longer publishes `sliding_map` TF.
 
 ## Deployment order
 
-1. Build `omni_slam` and `omni_tf_manager` in the same colcon workspace.
+1. Build `omni_tf_manager` first, or let colcon order it before `omni_slam` in
+   the same workspace.
 2. Select one calibrated TF profile.
 3. Start `omni_tf_manager` before starting a mapping/localization epoch.
 4. Start `omni_slam_manager` with the same `tf_profile_path`.

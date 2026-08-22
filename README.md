@@ -25,8 +25,10 @@ In `authority` mode this node is the only publisher of:
 - dynamic `map -> odom` and `odom -> base`;
 - configured static body, LiDAR, IMU, depth-camera and RGB-camera transforms.
 
-It consumes `/omni/slam/status` and changes behavior without starting another
-bridge process:
+It owns the typed `omni_tf_manager/msg/SlamStatus` contract, consumes it on
+`/omni/slam/status`, and changes behavior without starting another bridge
+process. `omni_slam_manager` publishes this status; no TF-manager package
+depends on a SLAM implementation package.
 
 | SLAM mode | Dynamic TF behavior |
 |---|---|
@@ -127,18 +129,21 @@ ros2 topic echo /lidar_imu --once --field header
 
 ## Build and test
 
-Because the manager consumes the existing typed `SlamStatus`, build the
-interface and manager together:
+The manager owns its status interface and builds independently:
 
 ```bash
 cd /home/user/robot/omni_code/omni_navi
 source /opt/ros/humble/setup.bash
-colcon build --base-paths omni_slam omni_tf_manager --symlink-install
+colcon build --base-paths omni_tf_manager --symlink-install
 source install/setup.bash
 ROS_LOG_DIR=/tmp/omni_ros_test_logs \
-  colcon test --base-paths omni_slam omni_tf_manager
+  colcon test --base-paths omni_tf_manager
 colcon test-result --verbose
 ```
+
+For the integrated runtime, place `omni_tf_manager` and `omni_slam` in the
+same colcon workspace. Colcon resolves `omni_tf_manager` before the SLAM
+manager that publishes `SlamStatus`.
 
 Normal managed launch:
 

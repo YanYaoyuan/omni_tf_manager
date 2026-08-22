@@ -25,7 +25,7 @@
 #include <diagnostic_msgs/msg/key_value.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
-#include <omni_slam_interfaces/msg/slam_status.hpp>
+#include <omni_tf_manager/msg/slam_status.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
@@ -82,14 +82,14 @@ bool validMode(const std::string & mode)
 
 enum class SlamMode : std::uint8_t
 {
-  kStopped = omni_slam_interfaces::msg::SlamStatus::MODE_STOPPED,
-  kMapping = omni_slam_interfaces::msg::SlamStatus::MODE_MAPPING,
-  kLocalization = omni_slam_interfaces::msg::SlamStatus::MODE_LOCALIZATION,
+  kStopped = msg::SlamStatus::MODE_STOPPED,
+  kMapping = msg::SlamStatus::MODE_MAPPING,
+  kLocalization = msg::SlamStatus::MODE_LOCALIZATION,
 };
 
 bool validSlamMode(std::uint8_t mode)
 {
-  return mode <= omni_slam_interfaces::msg::SlamStatus::MODE_LOCALIZATION;
+  return mode <= msg::SlamStatus::MODE_LOCALIZATION;
 }
 
 SlamMode parseSlamMode(const std::string & mode)
@@ -162,7 +162,7 @@ public:
     icp_pose_sub_ = create_subscription<nav_msgs::msg::Odometry>(
       icp_pose_topic_, rclcpp::QoS(10).reliable(),
       std::bind(&OmniTfManagerNode::icpPoseCallback, this, std::placeholders::_1));
-    slam_status_sub_ = create_subscription<omni_slam_interfaces::msg::SlamStatus>(
+    slam_status_sub_ = create_subscription<msg::SlamStatus>(
       slam_status_topic_, rclcpp::QoS(1).reliable().transient_local(),
       std::bind(&OmniTfManagerNode::slamStatusCallback, this, std::placeholders::_1));
 
@@ -537,7 +537,7 @@ private:
   }
 
   void slamStatusCallback(
-    const omni_slam_interfaces::msg::SlamStatus::ConstSharedPtr message)
+    const msg::SlamStatus::ConstSharedPtr message)
   {
     if (!message) {
       return;
@@ -1100,7 +1100,7 @@ private:
 
   SlamMode fallback_slam_mode_{SlamMode::kStopped};
   SlamMode slam_mode_{SlamMode::kStopped};
-  std::uint8_t slam_state_{omni_slam_interfaces::msg::SlamStatus::STATE_STOPPED};
+  std::uint8_t slam_state_{msg::SlamStatus::STATE_STOPPED};
   std::uint64_t slam_status_sequence_{0U};
   std::chrono::steady_clock::time_point last_slam_status_receive_time_{};
   bool slam_mode_initialized_{false};
@@ -1134,7 +1134,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ready_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sensor_odom_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr icp_pose_sub_;
-  rclcpp::Subscription<omni_slam_interfaces::msg::SlamStatus>::SharedPtr slam_status_sub_;
+  rclcpp::Subscription<msg::SlamStatus>::SharedPtr slam_status_sub_;
   std::vector<rclcpp::PublisherBase::SharedPtr> sensor_relay_publishers_;
   std::vector<rclcpp::SubscriptionBase::SharedPtr> sensor_relay_subscriptions_;
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;
