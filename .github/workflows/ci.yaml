@@ -1,9 +1,14 @@
-name: ROS 2 Humble CI
+name: Build x86_64 (ROS 2 Humble)
 
 on:
   pull_request:
+    branches: [main]
   push:
     branches: [main]
+
+concurrency:
+  group: x86-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -11,13 +16,43 @@ permissions:
 jobs:
   build-and-test:
     runs-on: ubuntu-22.04
+    container: ros:humble-ros-base-jammy
+    defaults:
+      run:
+        shell: bash
+    env:
+      ROS_DISTRO: humble
+      DEBIAN_FRONTEND: noninteractive
+
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: ros-tooling/setup-ros@0.7.19
-        with:
-          required-ros-distributions: humble
-      - uses: ros-tooling/action-ros-ci@0.4.8
-        with:
-          import-token: ${{ github.token }}
-          package-name: omni_tf_manager
-          target-ros2-distro: humble
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            python3-colcon-common-extensions \
+            python3-rosdep
+          rosdep init || true
+          rosdep update --rosdistro "${ROS_DISTRO}"
+
+      - name: Install ROS dependencies
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          rosdep install --from-paths . --ignore-src \
+            --rosdistro "${ROS_DISTRO}" -y
+
+      - name: Build and test
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          colcon build \
+            --packages-select omni_tf_manager \
+            --event-handlers console_direct+ \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release
+          source install/setup.bash
+          colcon test \
+            --packages-select omni_tf_manager \
+            --event-handlers console_direct+
+          colcon test-result --verbose
