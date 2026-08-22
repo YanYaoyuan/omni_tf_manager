@@ -12,11 +12,11 @@ jobs:
   build-and-test:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: ros-tooling/setup-ros@v0.7
+      - uses: actions/checkout@v7.0.1
+      - uses: ros-tooling/setup-ros@0.7.19
         with:
           required-ros-distributions: humble
-      - uses: ros-tooling/action-ros-ci@v0.3
+      - uses: ros-tooling/action-ros-ci@0.4.8
         with:
           import-token: ${{ github.token }}
           package-name: omni_tf_manager
