@@ -25,8 +25,10 @@ In `authority` mode this node is the only publisher of:
 - dynamic `map -> odom` and `odom -> base`;
 - configured static body, LiDAR, IMU, depth-camera and RGB-camera transforms.
 
-It consumes `/omni/slam/status` and changes behavior without starting another
-bridge process:
+It owns the typed `omni_tf_manager/msg/SlamStatus` contract, consumes it on
+`/omni/slam/status`, and changes behavior without starting another bridge
+process. `omni_slam_manager` publishes this status; no TF-manager package
+depends on a SLAM implementation package.
 
 | SLAM mode | Dynamic TF behavior |
 |---|---|
@@ -91,20 +93,57 @@ the XGW MuJoCo model. Matrix's LiDAR and `livox_imu` site are co-located, so
 its FAST-LIO `T_imu_lidar` is identity. The same profile enables typed header
 normalization for the closed-source Matrix publishers.
 
+`config/omni_dog.yaml` and `config/omni_vbot_dog.yaml` define the real-dog
+LiDAR/IMU topics and reviewed 6DoF calibration sources. They intentionally ship
+in `shadow` mode with `alias_verified=false`: capture both raw message headers
+on the target robot, verify that each payload is already expressed in the
+claimed physical sensor frame, then review the profile before enabling
+`authority` mode.
+
+## Sensor frame aliases
+
+A sensor relay must declare:
+
+```yaml
+sensor_relay.lidar.operation: identity_frame_alias
+sensor_relay.lidar.alias_verified: true
+sensor_relay.lidar.input_frame: vendor_lidar_frame
+sensor_relay.lidar.output_frame: omni_lidar_link
+```
+
+`identity_frame_alias` is a metadata correction, not a TF transform: the
+message payload, timestamp and covariance remain byte-for-byte/numerically
+unchanged. Use it only when the payload already uses the axes and origin of the
+canonical physical frame. Authority mode refuses unreviewed aliases. Shadow
+mode observes and reports their actual `frame_id` but publishes no canonical
+sample while `alias_verified=false`.
+
+Capture live headers before approval:
+
+```bash
+ros2 topic echo /front_lidar --once --field header
+ros2 topic echo /front_lidar/imu --once --field header
+ros2 topic echo /lidar_points --once --field header
+ros2 topic echo /lidar_imu --once --field header
+```
+
 ## Build and test
 
-Because the manager consumes the existing typed `SlamStatus`, build the
-interface and manager together:
+The manager owns its status interface and builds independently:
 
 ```bash
 cd /home/user/robot/omni_code/omni_navi
 source /opt/ros/humble/setup.bash
-colcon build --base-paths omni_slam omni_tf_manager --symlink-install
+colcon build --base-paths omni_tf_manager --symlink-install
 source install/setup.bash
 ROS_LOG_DIR=/tmp/omni_ros_test_logs \
-  colcon test --base-paths omni_slam omni_tf_manager
+  colcon test --base-paths omni_tf_manager
 colcon test-result --verbose
 ```
+
+For the integrated runtime, place `omni_tf_manager` and `omni_slam` in the
+same colcon workspace. Colcon resolves `omni_tf_manager` before the SLAM
+manager that publishes `SlamStatus`.
 
 Normal managed launch:
 

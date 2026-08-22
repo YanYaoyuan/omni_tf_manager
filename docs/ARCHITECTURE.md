@@ -9,8 +9,9 @@ state machine and typed status, and only calculates pose/alignment data.
 
 This is a deliberate product-specific extension of the generic monitor-only
 proposal in `ROS2_通用_TF_管理模块设计方案.md`. The profile format remains robot
-agnostic, but the runtime authority consumes the stable Omni SLAM status
-contract.
+agnostic. `omni_tf_manager` owns the stable `SlamStatus` interface contract;
+the SLAM state machine publishes it and remains responsible only for state and
+pose estimation.
 
 ## Edge ownership
 

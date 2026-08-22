@@ -1,0 +1,89 @@
+omni_tf_manager:
+  ros__parameters:
+    # Keep this profile in shadow until both live headers have been captured on
+    # the target dog and the two alias_verified flags below are reviewed.
+    mode: shadow
+    profile_name: omni_dog
+    profile_version: 1.0.0-rc1
+    calibration_id: OMNI_DOG_CALIBRATION_RESULTS_PENDING_LIVE_HEADER_RECHECK
+    naming.require_omni_prefix: true
+    use_sim_time: false
+
+    frames.map: omni_map
+    frames.odom: omni_odom
+    frames.base: omni_base_link
+    frames.tracking: omni_imu_link
+    frames.icp_sensor: omni_lidar_link
+
+    topics.sensor_odom: /state_estimation
+    topics.icp_pose: /icp_result
+    topics.slam_status: /omni/slam/status
+    topics.local_body_odom: /omni/tf_manager/body_odom
+    topics.global_body_odom: /omni/tf_manager/body_odom_global
+    topics.diagnostics: /diagnostics
+    topics.ready: /omni/tf_manager/ready
+
+    publish.local_body_odom: true
+    publish.global_body_odom: true
+    publish.add_map_covariance: false
+
+    slam_state.required: true
+    slam_state.fallback_mode: stopped
+    timeouts.slam_status_s: 2.0
+
+    map_to_odom.allow_reinitialization: false
+    map_to_odom.translation_jump_limit_m: 2.0
+    map_to_odom.rotation_jump_limit_rad: 0.7853981633974483
+
+    validation.require_nonzero_stamp: true
+    validation.require_monotonic_stamp: true
+    validation.max_input_age_s: 1.0
+    validation.max_icp_age_s: 30.0
+    validation.max_future_offset_s: 0.1
+    validation.quaternion_norm_tolerance: 0.05
+    validation.max_linear_speed_mps: 5.0
+    validation.max_angular_speed_radps: 8.0
+    validation.position_jump_margin_m: 0.5
+    validation.rotation_jump_margin_rad: 0.35
+    timeouts.sensor_odom_s: 0.5
+    diagnostics.period_s: 0.5
+
+    required_sensor_roles: [lidar, imu]
+    static_transforms: [imu_mount, lidar_mount]
+
+    # T_base_imu copied from SCAN-Planner/doc/calibration_results.yaml
+    # (imu_front_to_base). With T_imu_lidar below it composes to the validated
+    # T_base_lidar translation [0.13011, -0.02329, 0.17598].
+    static_transform.imu_mount.role: imu
+    static_transform.imu_mount.parent_frame: omni_base_link
+    static_transform.imu_mount.child_frame: omni_imu_link
+    static_transform.imu_mount.translation: [0.14111, 0.0, 0.13186]
+    static_transform.imu_mount.rotation_rpy: [0.0, 0.0, 0.0]
+
+    # T_imu_lidar copied from the previously validated omni_dog FAST_LIO
+    # configuration. All transforms are parent -> child, metres and radians.
+    static_transform.lidar_mount.role: lidar
+    static_transform.lidar_mount.parent_frame: omni_imu_link
+    static_transform.lidar_mount.child_frame: omni_lidar_link
+    static_transform.lidar_mount.translation: [-0.011, -0.02329, 0.04412]
+    static_transform.lidar_mount.rotation_rpy: [0.0, 0.0, 0.0]
+
+    # identity_frame_alias changes metadata only; it never transforms payload
+    # coordinates. Keep aliases blocked until a live capture confirms both
+    # headers and the physical coordinate semantics on this exact robot.
+    sensor_relays: [lidar, imu]
+    sensor_relay.lidar.type: pointcloud2
+    sensor_relay.lidar.operation: identity_frame_alias
+    sensor_relay.lidar.alias_verified: false
+    sensor_relay.lidar.input_topic: /front_lidar
+    sensor_relay.lidar.output_topic: /omni/sensors/lidar/points
+    sensor_relay.lidar.input_frame: livox_frame
+    sensor_relay.lidar.output_frame: omni_lidar_link
+
+    sensor_relay.imu.type: imu
+    sensor_relay.imu.operation: identity_frame_alias
+    sensor_relay.imu.alias_verified: false
+    sensor_relay.imu.input_topic: /front_lidar/imu
+    sensor_relay.imu.output_topic: /omni/sensors/imu/data
+    sensor_relay.imu.input_frame: livox_frame
+    sensor_relay.imu.output_frame: omni_imu_link

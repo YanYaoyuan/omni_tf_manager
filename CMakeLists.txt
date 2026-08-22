@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.16)
 project(omni_tf_manager)
 
 if(NOT CMAKE_CXX_STANDARD)
@@ -8,17 +8,33 @@ endif()
 add_compile_options(-Wall -Wextra -Wpedantic)
 
 find_package(ament_cmake REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
-find_package(omni_slam_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
+# Keep the interface surface explicit. The optional Humble Rust generator is
+# deprecated and is not part of this C++/Python runtime contract.
+find_package(rosidl_cmake REQUIRED)
+find_package(rosidl_generator_c REQUIRED)
+find_package(rosidl_generator_cpp REQUIRED)
+find_package(rosidl_generator_py REQUIRED)
+find_package(rosidl_typesupport_c REQUIRED)
+find_package(rosidl_typesupport_cpp REQUIRED)
+find_package(rosidl_typesupport_fastrtps_c REQUIRED)
+find_package(rosidl_typesupport_fastrtps_cpp REQUIRED)
+find_package(rosidl_typesupport_introspection_c REQUIRED)
+find_package(rosidl_typesupport_introspection_cpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/SlamStatus.msg"
+  DEPENDENCIES builtin_interfaces)
 
 add_library(${PROJECT_NAME}_core
   src/configuration.cpp
@@ -34,8 +50,11 @@ add_executable(${PROJECT_NAME}_node src/omni_tf_manager_node.cpp)
 target_include_directories(${PROJECT_NAME}_node PRIVATE include)
 target_link_libraries(${PROJECT_NAME}_node ${PROJECT_NAME}_core Eigen3::Eigen)
 ament_target_dependencies(${PROJECT_NAME}_node
-  diagnostic_msgs geometry_msgs nav_msgs omni_slam_interfaces rclcpp sensor_msgs std_msgs
+  diagnostic_msgs geometry_msgs nav_msgs rclcpp sensor_msgs std_msgs
   tf2 tf2_geometry_msgs tf2_ros)
+rosidl_get_typesupport_target(cpp_typesupport_target
+  ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(${PROJECT_NAME}_node "${cpp_typesupport_target}")
 
 install(TARGETS
   ${PROJECT_NAME}_core
@@ -57,6 +76,7 @@ install(PROGRAMS tools/validate_matrix_xgw_profile.py
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
 ament_export_dependencies(geometry_msgs nav_msgs tf2 tf2_geometry_msgs)
+ament_export_dependencies(rosidl_default_runtime)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -67,6 +87,10 @@ if(BUILD_TESTING)
   ament_add_gtest(test_configuration test/test_configuration.cpp)
   target_link_libraries(test_configuration ${PROJECT_NAME}_core Eigen3::Eigen)
   ament_target_dependencies(test_configuration geometry_msgs)
+
+  ament_add_gtest(test_sensor_frame_alias test/test_sensor_frame_alias.cpp)
+  target_include_directories(test_sensor_frame_alias PRIVATE include)
+  ament_target_dependencies(test_sensor_frame_alias sensor_msgs)
 
   # Use explicit source paths. ament_lint_auto recursively scans build/install
   # when this single-package repository is built from its own root directory.

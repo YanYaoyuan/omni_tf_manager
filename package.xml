@@ -10,11 +10,21 @@
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_generator_c</buildtool_depend>
+  <buildtool_depend>rosidl_generator_cpp</buildtool_depend>
+  <buildtool_depend>rosidl_generator_py</buildtool_depend>
+  <buildtool_depend>rosidl_typesupport_c</buildtool_depend>
+  <buildtool_depend>rosidl_typesupport_cpp</buildtool_depend>
+  <buildtool_depend>rosidl_typesupport_fastrtps_c</buildtool_depend>
+  <buildtool_depend>rosidl_typesupport_fastrtps_cpp</buildtool_depend>
+  <buildtool_depend>rosidl_typesupport_introspection_c</buildtool_depend>
+  <buildtool_depend>rosidl_typesupport_introspection_cpp</buildtool_depend>
 
+  <depend>builtin_interfaces</depend>
   <depend>diagnostic_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
-  <depend>omni_slam_interfaces</depend>
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
@@ -23,12 +33,15 @@
   <depend>tf2_ros</depend>
   <depend>eigen</depend>
 
+  <exec_depend>rosidl_default_runtime</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_common</test_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
 
   <export>
     <build_type>ament_cmake</build_type>

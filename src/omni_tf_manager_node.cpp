@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -24,7 +25,7 @@
 #include <diagnostic_msgs/msg/key_value.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
-#include <omni_slam_interfaces/msg/slam_status.hpp>
+#include <omni_tf_manager/msg/slam_status.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
@@ -34,6 +35,7 @@
 #include <std_msgs/msg/bool.hpp>
 
 #include "omni_tf_manager/configuration.hpp"
+#include "omni_tf_manager/sensor_frame_alias.hpp"
 #include "omni_tf_manager/transform_math.hpp"
 
 namespace omni_tf_manager
@@ -80,14 +82,14 @@ bool validMode(const std::string & mode)
 
 enum class SlamMode : std::uint8_t
 {
-  kStopped = omni_slam_interfaces::msg::SlamStatus::MODE_STOPPED,
-  kMapping = omni_slam_interfaces::msg::SlamStatus::MODE_MAPPING,
-  kLocalization = omni_slam_interfaces::msg::SlamStatus::MODE_LOCALIZATION,
+  kStopped = msg::SlamStatus::MODE_STOPPED,
+  kMapping = msg::SlamStatus::MODE_MAPPING,
+  kLocalization = msg::SlamStatus::MODE_LOCALIZATION,
 };
 
 bool validSlamMode(std::uint8_t mode)
 {
-  return mode <= omni_slam_interfaces::msg::SlamStatus::MODE_LOCALIZATION;
+  return mode <= msg::SlamStatus::MODE_LOCALIZATION;
 }
 
 SlamMode parseSlamMode(const std::string & mode)
@@ -160,7 +162,7 @@ public:
     icp_pose_sub_ = create_subscription<nav_msgs::msg::Odometry>(
       icp_pose_topic_, rclcpp::QoS(10).reliable(),
       std::bind(&OmniTfManagerNode::icpPoseCallback, this, std::placeholders::_1));
-    slam_status_sub_ = create_subscription<omni_slam_interfaces::msg::SlamStatus>(
+    slam_status_sub_ = create_subscription<msg::SlamStatus>(
       slam_status_topic_, rclcpp::QoS(1).reliable().transient_local(),
       std::bind(&OmniTfManagerNode::slamStatusCallback, this, std::placeholders::_1));
 
@@ -352,31 +354,40 @@ private:
   }
 
   template<typename MessageT>
-  void addHeaderRelay(
+  void addIdentityFrameAlias(
     const std::string & id, const std::string & input_topic,
     const std::string & output_topic, const std::string & expected_input_frame,
-    const std::string & output_frame)
+    const std::string & output_frame, bool alias_verified)
   {
     auto publisher = create_publisher<MessageT>(output_topic, rclcpp::SensorDataQoS());
     auto subscription = create_subscription<MessageT>(
       input_topic, rclcpp::SensorDataQoS(),
-      [this, id, publisher, expected_input_frame, output_frame](
+      [this, id, publisher, expected_input_frame, output_frame, alias_verified](
         const typename MessageT::ConstSharedPtr message)
       {
         if (!message) {
           return;
         }
-        if (!expected_input_frame.empty() &&
-        message->header.frame_id != expected_input_frame)
-        {
+        MessageT output;
+        const auto status = applyIdentityFrameAlias(
+          *message, expected_input_frame, output_frame, alias_verified, output);
+        if (status == SensorFrameAliasStatus::kUnverified) {
+          ++unverified_sensor_alias_samples_;
+          RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Sensor alias '%s' is not verified; observed frame_id '%s', no output published",
+            id.c_str(), message->header.frame_id.c_str());
+          return;
+        }
+        if (status == SensorFrameAliasStatus::kInputFrameMismatch) {
+          ++rejected_sensor_alias_samples_;
           RCLCPP_ERROR_THROTTLE(
             get_logger(), *get_clock(), 2000,
-            "Sensor relay '%s' rejected frame_id '%s'; expected '%s'",
+            "Sensor alias '%s' rejected frame_id '%s'; expected '%s'",
             id.c_str(), message->header.frame_id.c_str(), expected_input_frame.c_str());
           return;
         }
-        auto output = *message;
-        output.header.frame_id = output_frame;
+        ++accepted_sensor_alias_samples_;
         publisher->publish(output);
       });
     sensor_relay_publishers_.push_back(publisher);
@@ -392,49 +403,63 @@ private:
     for (const auto & id : relay_ids) {
       const std::string prefix = "sensor_relay." + id + ".";
       const auto type = declare_parameter<std::string>(prefix + "type", "");
+      const auto operation = declare_parameter<std::string>(prefix + "operation", "");
       const auto input_topic = declare_parameter<std::string>(prefix + "input_topic", "");
       const auto output_topic = declare_parameter<std::string>(prefix + "output_topic", "");
       const auto input_frame = declare_parameter<std::string>(prefix + "input_frame", "");
       const auto output_frame = declare_parameter<std::string>(prefix + "output_frame", "");
-      if (id.empty() || type.empty() || input_topic.empty() || output_topic.empty() ||
-        output_frame.empty())
+      const bool alias_verified = declare_parameter<bool>(prefix + "alias_verified", false);
+      if (id.empty() || type.empty() || operation.empty() || input_topic.empty() ||
+        output_topic.empty() || input_frame.empty() || output_frame.empty())
       {
         throw std::invalid_argument("sensor relay fields must not be empty: " + id);
+      }
+      if (operation != "identity_frame_alias") {
+        throw std::invalid_argument(
+                "sensor relay operation must be identity_frame_alias: " + id);
       }
       if (input_topic == output_topic || !input_topics.insert(input_topic).second ||
         !output_topics.insert(output_topic).second)
       {
         throw std::invalid_argument("sensor relay topics must be unique: " + id);
       }
-      if (!validFrameId(output_frame) ||
+      if (!validFrameId(input_frame) || !validFrameId(output_frame) ||
         (require_omni_prefix_ && output_frame.rfind("omni_", 0U) != 0U))
       {
-        throw std::invalid_argument("invalid sensor relay output frame: " + output_frame);
+        throw std::invalid_argument("invalid sensor relay frame: " + id);
+      }
+      if (input_frame == output_frame) {
+        throw std::invalid_argument("sensor relay frames must be distinct: " + id);
+      }
+      if (authorityMode() && !alias_verified) {
+        throw std::invalid_argument(
+                "authority mode requires a reviewed sensor alias: " + id);
       }
       // Require the rewritten frame to exist in the reviewed static tree.
       (void)resolveTransform(static_transforms_, base_frame_, output_frame);
 
       if (type == "pointcloud2") {
-        addHeaderRelay<sensor_msgs::msg::PointCloud2>(
-          id, input_topic, output_topic, input_frame, output_frame);
+        addIdentityFrameAlias<sensor_msgs::msg::PointCloud2>(
+          id, input_topic, output_topic, input_frame, output_frame, alias_verified);
       } else if (type == "imu") {
-        addHeaderRelay<sensor_msgs::msg::Imu>(
-          id, input_topic, output_topic, input_frame, output_frame);
+        addIdentityFrameAlias<sensor_msgs::msg::Imu>(
+          id, input_topic, output_topic, input_frame, output_frame, alias_verified);
       } else if (type == "image") {
-        addHeaderRelay<sensor_msgs::msg::Image>(
-          id, input_topic, output_topic, input_frame, output_frame);
+        addIdentityFrameAlias<sensor_msgs::msg::Image>(
+          id, input_topic, output_topic, input_frame, output_frame, alias_verified);
       } else if (type == "compressed_image") {
-        addHeaderRelay<sensor_msgs::msg::CompressedImage>(
-          id, input_topic, output_topic, input_frame, output_frame);
+        addIdentityFrameAlias<sensor_msgs::msg::CompressedImage>(
+          id, input_topic, output_topic, input_frame, output_frame, alias_verified);
       } else if (type == "camera_info") {
-        addHeaderRelay<sensor_msgs::msg::CameraInfo>(
-          id, input_topic, output_topic, input_frame, output_frame);
+        addIdentityFrameAlias<sensor_msgs::msg::CameraInfo>(
+          id, input_topic, output_topic, input_frame, output_frame, alias_verified);
       } else {
         throw std::invalid_argument("unsupported sensor relay type '" + type + "': " + id);
       }
       RCLCPP_INFO(
-        get_logger(), "Sensor header relay [%s/%s]: %s (%s) -> %s (%s)",
-        id.c_str(), type.c_str(), input_topic.c_str(), input_frame.c_str(),
+        get_logger(), "Sensor identity-frame alias [%s/%s, verified=%s]: %s (%s) -> %s (%s)",
+        id.c_str(), type.c_str(), boolString(alias_verified).c_str(),
+        input_topic.c_str(), input_frame.c_str(),
         output_topic.c_str(), output_frame.c_str());
     }
     sensor_relay_count_ = relay_ids.size();
@@ -512,7 +537,7 @@ private:
   }
 
   void slamStatusCallback(
-    const omni_slam_interfaces::msg::SlamStatus::ConstSharedPtr message)
+    const msg::SlamStatus::ConstSharedPtr message)
   {
     if (!message) {
       return;
@@ -983,6 +1008,18 @@ private:
         "static_transform_count", std::to_string(static_transforms_.size())));
     status.values.push_back(
       keyValue("sensor_relay_count", std::to_string(sensor_relay_count_)));
+    status.values.push_back(
+      keyValue(
+        "accepted_sensor_alias_samples",
+        std::to_string(accepted_sensor_alias_samples_.load())));
+    status.values.push_back(
+      keyValue(
+        "rejected_sensor_alias_samples",
+        std::to_string(rejected_sensor_alias_samples_.load())));
+    status.values.push_back(
+      keyValue(
+        "unverified_sensor_alias_samples",
+        std::to_string(unverified_sensor_alias_samples_.load())));
     array.status.push_back(std::move(status));
     diagnostics_pub_->publish(array);
   }
@@ -1063,7 +1100,7 @@ private:
 
   SlamMode fallback_slam_mode_{SlamMode::kStopped};
   SlamMode slam_mode_{SlamMode::kStopped};
-  std::uint8_t slam_state_{omni_slam_interfaces::msg::SlamStatus::STATE_STOPPED};
+  std::uint8_t slam_state_{msg::SlamStatus::STATE_STOPPED};
   std::uint64_t slam_status_sequence_{0U};
   std::chrono::steady_clock::time_point last_slam_status_receive_time_{};
   bool slam_mode_initialized_{false};
@@ -1083,6 +1120,9 @@ private:
   std::uint64_t rejected_map_samples_{0U};
   std::uint64_t ignored_inactive_map_samples_{0U};
   std::size_t sensor_relay_count_{0U};
+  std::atomic<std::uint64_t> accepted_sensor_alias_samples_{0U};
+  std::atomic<std::uint64_t> rejected_sensor_alias_samples_{0U};
+  std::atomic<std::uint64_t> unverified_sensor_alias_samples_{0U};
   std::string last_error_;
 
   std::mutex mutex_;
@@ -1094,7 +1134,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ready_pub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sensor_odom_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr icp_pose_sub_;
-  rclcpp::Subscription<omni_slam_interfaces::msg::SlamStatus>::SharedPtr slam_status_sub_;
+  rclcpp::Subscription<msg::SlamStatus>::SharedPtr slam_status_sub_;
   std::vector<rclcpp::PublisherBase::SharedPtr> sensor_relay_publishers_;
   std::vector<rclcpp::SubscriptionBase::SharedPtr> sensor_relay_subscriptions_;
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;

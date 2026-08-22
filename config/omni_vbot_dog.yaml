@@ -1,0 +1,87 @@
+omni_tf_manager:
+  ros__parameters:
+    # The topics and 6DoF calibration come from vbot.yaml/vbot_calib.yaml. Raw
+    # message frame IDs still require a live capture on the target Vbot.
+    mode: shadow
+    profile_name: omni_vbot_dog
+    profile_version: 1.0.0-rc1
+    calibration_id: VBOT_CALIB_YAML_PENDING_LIVE_HEADER_VERIFICATION
+    naming.require_omni_prefix: true
+    use_sim_time: false
+
+    frames.map: omni_map
+    frames.odom: omni_odom
+    frames.base: omni_base_link
+    frames.tracking: omni_imu_link
+    frames.icp_sensor: omni_lidar_link
+
+    topics.sensor_odom: /state_estimation
+    topics.icp_pose: /icp_result
+    topics.slam_status: /omni/slam/status
+    topics.local_body_odom: /omni/tf_manager/body_odom
+    topics.global_body_odom: /omni/tf_manager/body_odom_global
+    topics.diagnostics: /diagnostics
+    topics.ready: /omni/tf_manager/ready
+
+    publish.local_body_odom: true
+    publish.global_body_odom: true
+    publish.add_map_covariance: false
+
+    slam_state.required: true
+    slam_state.fallback_mode: stopped
+    timeouts.slam_status_s: 2.0
+
+    map_to_odom.allow_reinitialization: false
+    map_to_odom.translation_jump_limit_m: 2.0
+    map_to_odom.rotation_jump_limit_rad: 0.7853981633974483
+
+    validation.require_nonzero_stamp: true
+    validation.require_monotonic_stamp: true
+    validation.max_input_age_s: 1.0
+    validation.max_icp_age_s: 30.0
+    validation.max_future_offset_s: 0.1
+    validation.quaternion_norm_tolerance: 0.05
+    validation.max_linear_speed_mps: 5.0
+    validation.max_angular_speed_radps: 8.0
+    validation.position_jump_margin_m: 0.5
+    validation.rotation_jump_margin_rad: 0.35
+    timeouts.sensor_odom_s: 0.5
+    diagnostics.period_s: 0.5
+
+    required_sensor_roles: [lidar, imu]
+    static_transforms: [lidar_imu_mount, lidar_mount]
+
+    # vbot_calib.yaml: lidar_imu Extr_B_I. Quaternion is identity.
+    static_transform.lidar_imu_mount.role: imu
+    static_transform.lidar_imu_mount.parent_frame: omni_base_link
+    static_transform.lidar_imu_mount.child_frame: omni_imu_link
+    static_transform.lidar_imu_mount.translation: [0.18544, 0.01699, 0.18129]
+    static_transform.lidar_imu_mount.rotation_rpy: [0.0, 0.0, 0.0]
+
+    # inverse(T_B_I) * T_B_L, derived from vbot_calib.yaml. This is the same
+    # T_imu_lidar consumed by FAST_LIO/config/vbot.yaml.
+    static_transform.lidar_mount.role: lidar
+    static_transform.lidar_mount.parent_frame: omni_imu_link
+    static_transform.lidar_mount.child_frame: omni_lidar_link
+    static_transform.lidar_mount.translation: [0.0130608009, -0.0168667183, 0.0455456366]
+    static_transform.lidar_mount.rotation_rpy: [-0.0129653356, -0.0027346774, -0.0037736622]
+
+    # These expected raw frame names are candidates from the legacy Vbot
+    # configuration/calibration labels, not live observations. The manager
+    # therefore subscribes for diagnostics but publishes no canonical samples.
+    sensor_relays: [lidar, imu]
+    sensor_relay.lidar.type: pointcloud2
+    sensor_relay.lidar.operation: identity_frame_alias
+    sensor_relay.lidar.alias_verified: false
+    sensor_relay.lidar.input_topic: /lidar_points
+    sensor_relay.lidar.output_topic: /omni/sensors/lidar/points
+    sensor_relay.lidar.input_frame: lidar_frame
+    sensor_relay.lidar.output_frame: omni_lidar_link
+
+    sensor_relay.imu.type: imu
+    sensor_relay.imu.operation: identity_frame_alias
+    sensor_relay.imu.alias_verified: false
+    sensor_relay.imu.input_topic: /lidar_imu
+    sensor_relay.imu.output_topic: /omni/sensors/imu/data
+    sensor_relay.imu.input_frame: lidar_imu
+    sensor_relay.imu.output_frame: omni_imu_link
