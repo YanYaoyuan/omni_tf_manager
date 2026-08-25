@@ -58,10 +58,13 @@ target_link_libraries(${PROJECT_NAME}_node "${cpp_typesupport_target}")
 
 install(TARGETS
   ${PROJECT_NAME}_core
-  ${PROJECT_NAME}_node
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
+  LIBRARY DESTINATION lib)
+# Executables are runtime artifacts, not linkable downstream libraries. Keep
+# the node out of the exported target set so consumers of SlamStatus do not
+# receive an invalid omni_tf_manager_node link dependency.
+install(TARGETS ${PROJECT_NAME}_node
   RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(
