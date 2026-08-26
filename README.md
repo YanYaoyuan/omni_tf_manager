@@ -142,6 +142,32 @@ ROS_LOG_DIR=/tmp/omni_ros_test_logs \
 colcon test-result --verbose
 ```
 
+### RDK S100 artifact
+
+Every successful push to `main` packages and uploads the standalone artifact
+`omni-tf-manager-rdk-s100-aarch64`. It contains a relocatable ARM64 overlay,
+the generated Python ROSIDL package, launch files, all robot profiles and a
+manifest. The target must provide RDK OS and Humble/TogetheROS under
+`/opt/tros/humble` or `/opt/ros/humble`.
+
+The integrated `omni_slam` S100 artifact already embeds the same TF Manager
+runtime. Use the standalone artifact only for profile/relay testing or an
+independent TF Manager deployment; never start both copies simultaneously.
+
+Vbot standalone relay verification:
+
+```bash
+source /app/script/env.sh
+source /userdata/omni_navi/omni_tf_manager/setup.bash
+ros2 launch omni_tf_manager omni_tf_manager.launch.py \
+  config_file:=/userdata/omni_navi/omni_tf_manager/config/omni_tf_manager/omni_vbot_dog.yaml \
+  mode:=profile
+```
+
+The Vbot profile intentionally remains in `shadow` mode. It publishes
+`/omni/sensors/lidar/points` and `/omni/sensors/imu/data`, but it does not
+publish `/tf` or `/tf_static` until legacy TF publishers are audited.
+
 For the integrated runtime, place `omni_tf_manager` and `omni_slam` in the
 same colcon workspace. Colcon resolves `omni_tf_manager` before the SLAM
 manager that publishes `SlamStatus`.

@@ -6,6 +6,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Artifact version (optional)"
+        required: false
+        type: string
 
 concurrency:
   group: s100-${{ github.workflow }}-${{ github.ref }}
@@ -20,6 +25,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     env:
+      VERSION_INPUT: ${{ inputs.version }}
       S100_IMAGE: pc_tros_ubuntu22.04:v1.0.0
       S100_IMAGE_URL: http://archive.d-robotics.cc/TogetheROS/cross_compile_docker/pc_tros_ubuntu22.04_v1.0.0.tar.gz
       S100_IMAGE_SHA256: ec065c268782373311421f0bb7f2212bfec6584a7070a9737468055a6bce2c88
@@ -29,6 +35,9 @@ jobs:
     steps:
       - name: Checkout Omni TF Manager
         uses: actions/checkout@v7.0.1
+
+      - name: Validate packaging scripts
+        run: bash -n scripts/*.sh
 
       - name: Free runner disk space
         shell: bash
@@ -79,6 +88,51 @@ jobs:
           file "${cross_root}/install/lib/omni_tf_manager/omni_tf_manager_node" \
             | grep -Eq 'ARM aarch64|ARM64'
 
+      - name: Package S100 runtime
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cross_root="${RUNNER_TEMP}/s100-cross/cc_ws/tros_ws"
+          runtime_root="${cross_root}/runtime"
+          ./scripts/package_s100_runtime.sh \
+            "${cross_root}/install" \
+            "${runtime_root}"
+
+          version="${VERSION_INPUT:-${GITHUB_SHA::12}}"
+          version="${version//\//-}"
+          name="omni-tf-manager-rdk-s100-aarch64-${version}-${GITHUB_SHA::12}"
+
+          mkdir -p "dist/${name}"
+          cp -a "${runtime_root}/." "dist/${name}/"
+          cat > "dist/${name}/manifest.json" <<EOF
+          {
+            "project": "omni_tf_manager",
+            "version": "${version}",
+            "git_sha": "${GITHUB_SHA}",
+            "platform": "rdk-s100-rdkos-4",
+            "architecture": "aarch64",
+            "ros_distribution": "humble",
+            "built_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          sha256sum "dist/${name}.tar.gz" > "dist/${name}.tar.gz.sha256"
+          ls -lh "dist/${name}.tar.gz" "dist/${name}.tar.gz.sha256"
+
+      - name: Upload S100 runtime
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: omni-tf-manager-rdk-s100-aarch64
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Cleanup
         if: always()
         shell: bash
@@ -91,6 +145,7 @@ jobs:
             "${GITHUB_WORKSPACE}/build" \
             "${GITHUB_WORKSPACE}/install" \
             "${GITHUB_WORKSPACE}/log" \
+            "${GITHUB_WORKSPACE}/dist" \
             "${RUNNER_TEMP}/s100-cross"
 
           docker system prune --all --force || true
