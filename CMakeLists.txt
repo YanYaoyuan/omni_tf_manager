@@ -83,6 +83,7 @@ ament_export_dependencies(rosidl_default_runtime)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   ament_add_gtest(test_transform_math test/test_transform_math.cpp)
   target_link_libraries(test_transform_math ${PROJECT_NAME}_core Eigen3::Eigen)
   ament_target_dependencies(test_transform_math geometry_msgs nav_msgs)
@@ -94,6 +95,8 @@ if(BUILD_TESTING)
   ament_add_gtest(test_sensor_frame_alias test/test_sensor_frame_alias.cpp)
   target_include_directories(test_sensor_frame_alias PRIVATE include)
   ament_target_dependencies(test_sensor_frame_alias sensor_msgs)
+
+  ament_add_pytest_test(test_vbot_profile test/test_vbot_profile.py)
 
   # Use explicit source paths. ament_lint_auto recursively scans build/install
   # when this single-package repository is built from its own root directory.

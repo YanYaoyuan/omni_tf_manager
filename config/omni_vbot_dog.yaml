@@ -1,11 +1,14 @@
 omni_tf_manager:
   ros__parameters:
-    # The topics and 6DoF calibration come from vbot.yaml/vbot_calib.yaml. Raw
-    # message frame IDs still require a live capture on the target Vbot.
+    # The topics and 6DoF calibration come from vbot.yaml/vbot_calib.yaml.
+    # Live S100 capture on a Vbot reports frame_id=vita_lidar on both vendor
+    # topics. The legacy FAST-LIO path already consumed these payloads with the
+    # reviewed LiDAR/IMU extrinsic below, so only their incorrect shared header
+    # is normalized here.
     mode: shadow
     profile_name: omni_vbot_dog
-    profile_version: 1.0.0-rc1
-    calibration_id: VBOT_CALIB_YAML_PENDING_LIVE_HEADER_VERIFICATION
+    profile_version: 1.0.0-rc2
+    calibration_id: VBOT_VITA_EVT_LIVE_HEADER_2026_08_26
     naming.require_omni_prefix: true
     use_sim_time: false
 
@@ -66,22 +69,25 @@ omni_tf_manager:
     static_transform.lidar_mount.translation: [0.0130608009, -0.0168667183, 0.0455456366]
     static_transform.lidar_mount.rotation_rpy: [-0.0129653356, -0.0027346774, -0.0037736622]
 
-    # These expected raw frame names are candidates from the legacy Vbot
-    # configuration/calibration labels, not live observations. The manager
-    # therefore subscribes for diagnostics but publishes no canonical samples.
+    # The closed-source Vbot driver labels both streams as vita_lidar even
+    # though /lidar_points carries LiDAR-frame points and /lidar_imu carries
+    # the associated IMU-frame measurements. These topic/payload semantics are
+    # the same ones used by the previous direct FAST-LIO integration. Keep the
+    # profile in shadow mode until legacy TF publishers have been audited, but
+    # publish the reviewed canonical sensor aliases needed by FAST-LIO.
     sensor_relays: [lidar, imu]
     sensor_relay.lidar.type: pointcloud2
     sensor_relay.lidar.operation: identity_frame_alias
-    sensor_relay.lidar.alias_verified: false
+    sensor_relay.lidar.alias_verified: true
     sensor_relay.lidar.input_topic: /lidar_points
     sensor_relay.lidar.output_topic: /omni/sensors/lidar/points
-    sensor_relay.lidar.input_frame: lidar_frame
+    sensor_relay.lidar.input_frame: vita_lidar
     sensor_relay.lidar.output_frame: omni_lidar_link
 
     sensor_relay.imu.type: imu
     sensor_relay.imu.operation: identity_frame_alias
-    sensor_relay.imu.alias_verified: false
+    sensor_relay.imu.alias_verified: true
     sensor_relay.imu.input_topic: /lidar_imu
     sensor_relay.imu.output_topic: /omni/sensors/imu/data
-    sensor_relay.imu.input_frame: lidar_imu
+    sensor_relay.imu.input_frame: vita_lidar
     sensor_relay.imu.output_frame: omni_imu_link
