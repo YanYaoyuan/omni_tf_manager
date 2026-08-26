@@ -5,7 +5,7 @@ omni_tf_manager:
     # topics. The legacy FAST-LIO path already consumed these payloads with the
     # reviewed LiDAR/IMU extrinsic below, so only their incorrect shared header
     # is normalized here.
-    mode: shadow
+    mode: authority
     profile_name: omni_vbot_dog
     profile_version: 1.0.0-rc2
     calibration_id: VBOT_VITA_EVT_LIVE_HEADER_2026_08_26
