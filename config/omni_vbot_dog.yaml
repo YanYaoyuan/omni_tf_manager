@@ -72,9 +72,9 @@ omni_tf_manager:
     # The closed-source Vbot driver labels both streams as vita_lidar even
     # though /lidar_points carries LiDAR-frame points and /lidar_imu carries
     # the associated IMU-frame measurements. These topic/payload semantics are
-    # the same ones used by the previous direct FAST-LIO integration. Keep the
-    # profile in shadow mode until legacy TF publishers have been audited, but
-    # publish the reviewed canonical sensor aliases needed by FAST-LIO.
+    # the same ones used by the previous direct FAST-LIO integration. In
+    # authority mode, legacy TF publishers must remain disabled so this node
+    # is the sole owner of the canonical TF tree.
     sensor_relays: [lidar, imu]
     sensor_relay.lidar.type: pointcloud2
     sensor_relay.lidar.operation: identity_frame_alias

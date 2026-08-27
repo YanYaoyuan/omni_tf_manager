@@ -94,12 +94,13 @@ its FAST-LIO `T_imu_lidar` is identity. The same profile enables typed header
 normalization for the closed-source Matrix publishers.
 
 `config/omni_dog.yaml` and `config/omni_vbot_dog.yaml` define the real-dog
-LiDAR/IMU topics and reviewed 6DoF calibration sources. Both remain in `shadow`
-mode until legacy TF publishers are audited. The generic dog aliases remain
-unverified. The Vbot aliases are verified against a live S100 capture and the
-previous direct FAST-LIO integration: its closed-source driver reports the
-shared `vita_lidar` header on both sensor topics, so the relay normalizes each
-topic to its calibrated physical frame while leaving the payload untouched.
+LiDAR/IMU topics and reviewed 6DoF calibration sources. The generic dog remains
+in `shadow` mode with unverified aliases. The Vbot profile runs in `authority`
+mode; legacy TF publishers must therefore be disabled. Its aliases are verified
+against a live S100 capture and the previous direct FAST-LIO integration: the
+closed-source driver reports the shared `vita_lidar` header on both sensor
+topics, so the relay normalizes each topic to its calibrated physical frame
+while leaving the payload untouched.
 
 ## Sensor frame aliases
 
@@ -164,9 +165,9 @@ ros2 launch omni_tf_manager omni_tf_manager.launch.py \
   mode:=profile
 ```
 
-The Vbot profile intentionally remains in `shadow` mode. It publishes
-`/omni/sensors/lidar/points` and `/omni/sensors/imu/data`, but it does not
-publish `/tf` or `/tf_static` until legacy TF publishers are audited.
+The Vbot profile runs in `authority` mode. It publishes the canonical sensor
+topics plus `/tf` and `/tf_static`; do not run any legacy TF publisher beside
+it.
 
 For the integrated runtime, place `omni_tf_manager` and `omni_slam` in the
 same colcon workspace. Colcon resolves `omni_tf_manager` before the SLAM

@@ -115,7 +115,7 @@ test -f "${python_package}/__init__.py"
 find "${python_package}" -maxdepth 1 -type f \
   -name '*rosidl_typesupport_c*.so' -print -quit | grep -q .
 
-grep -Fqx '    mode: shadow' "${profile}"
+grep -Fqx '    mode: authority' "${profile}"
 grep -Fqx '    sensor_relay.lidar.alias_verified: true' "${profile}"
 grep -Fqx '    sensor_relay.lidar.input_frame: vita_lidar' "${profile}"
 grep -Fqx '    sensor_relay.imu.alias_verified: true' "${profile}"

@@ -10,7 +10,7 @@ def test_vbot_live_sensor_alias_contract():
     profile = yaml.safe_load(PROFILE_PATH.read_text(encoding="utf-8"))
     parameters = profile["omni_tf_manager"]["ros__parameters"]
 
-    assert parameters["mode"] == "shadow"
+    assert parameters["mode"] == "authority"
     assert parameters["profile_name"] == "omni_vbot_dog"
     assert parameters["calibration_id"] != "unverified"
     assert parameters["sensor_relays"] == ["lidar", "imu"]
